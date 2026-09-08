@@ -9,20 +9,40 @@ jest.mock('react-toastify', () => ({
   },
 }));
 
-// Mock CopyIcon
+// Mock icons
 jest.mock('lucide-react', () => ({
   CopyIcon: () => <svg data-testid="copy-icon"></svg>,
+  Eye: () => <svg data-testid="eye-icon"></svg>,
+  EyeOff: () => <svg data-testid="eye-off-icon"></svg>,
 }));
 
-describe('CopyableCode', () => {
-  const sampleText = 'Sample code';
-  const sampleCopyText = 'Copy this text';
+const sampleText = 'Sample code';
+const sampleCopyText = 'Copy this text';
 
+describe('CopyableCode', () => {
   it('renders correctly with given text', () => {
     render(<CopyableCode text={sampleText} copyText={sampleCopyText} />);
 
     expect(screen.getByText(sampleText)).toBeInTheDocument();
     expect(screen.getByTestId('copy-icon')).toBeInTheDocument();
+  });
+  it('toggles sensitive value visibility and masks the text', () => {
+    const sensitiveText = 'API_KEY 12345';
+
+    render(
+      <CopyableCode
+        text={sensitiveText}
+        copyText={sensitiveText}
+        isSensitive={true}
+      />
+    );
+    expect(screen.getByText(sensitiveText)).toBeInTheDocument();
+    expect(screen.getByTestId('eye-off-icon')).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole('button', { name: /hide sensitive value/i })
+    );
+    expect(screen.getByText('API_KEY •••••')).toBeInTheDocument();
+    expect(screen.getByTestId('eye-icon')).toBeInTheDocument();
   });
 
   it('copies text to clipboard and shows toast message', async () => {
@@ -44,5 +64,14 @@ describe('CopyableCode', () => {
         }
       );
     });
+  });
+});
+
+describe('SetupGuide component using snapshot', () => {
+  test('renders correctly', () => {
+    const { asFragment } = render(
+      <CopyableCode text={sampleText} copyText={sampleCopyText} />
+    );
+    expect(asFragment()).toMatchSnapshot();
   });
 });

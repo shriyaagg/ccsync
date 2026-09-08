@@ -1,12 +1,12 @@
 # Use node image for building the frontend
-FROM node:16-alpine as build
+FROM node:25-alpine AS build
 
 # Set working directory
 WORKDIR /app
 
 # Copy package.json and install dependencies
 COPY package.json package-lock.json ./
-RUN npm install
+RUN npm install --ignore-scripts
 
 # Copy the rest of the application code and build
 COPY . .

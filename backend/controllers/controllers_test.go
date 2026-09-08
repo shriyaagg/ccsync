@@ -1,6 +1,7 @@
 package controllers
 
 import (
+	"bytes"
 	"encoding/gob"
 	"encoding/json"
 	"net/http"
@@ -53,7 +54,6 @@ func Test_OAuthHandler(t *testing.T) {
 
 func Test_OAuthCallbackHandler(t *testing.T) {
 	app := setup()
-	// This part of the test requires mocking the OAuth provider which can be complex. Simplified for demonstration.
 	req, err := http.NewRequest("GET", "/auth/callback?code=testcode", nil)
 	assert.NoError(t, err)
 
@@ -61,14 +61,12 @@ func Test_OAuthCallbackHandler(t *testing.T) {
 	handler := http.HandlerFunc(app.OAuthCallbackHandler)
 	handler.ServeHTTP(rr, req)
 
-	// Since actual OAuth flow can't be tested in unit test, we are focusing on ensuring no panic
 	assert.NotEqual(t, http.StatusInternalServerError, rr.Code)
 }
 
 func Test_UserInfoHandler(t *testing.T) {
 	app := setup()
 
-	// Create a request object to pass to the session store
 	req, err := http.NewRequest("GET", "/api/user", nil)
 	assert.NoError(t, err)
 
@@ -79,7 +77,7 @@ func Test_UserInfoHandler(t *testing.T) {
 		"uuid":              "uuid-test",
 		"encryption_secret": "secret-test",
 	}
-	session.Save(req, httptest.NewRecorder()) // Save the session
+	session.Save(req, httptest.NewRecorder())
 
 	rr := httptest.NewRecorder()
 	handler := http.HandlerFunc(app.UserInfoHandler)
@@ -121,4 +119,249 @@ func Test_LogoutHandler(t *testing.T) {
 	assert.Equal(t, http.StatusOK, rr.Code)
 	session, _ := app.SessionStore.Get(req, "session-name")
 	assert.Equal(t, -1, session.Options.MaxAge)
+}
+
+func Test_AddTaskHandler_WithDueDate(t *testing.T) {
+	GlobalJobQueue = NewJobQueue()
+
+	requestBody := map[string]interface{}{
+		"email":            "test@example.com",
+		"encryptionSecret": "secret",
+		"UUID":             "test-uuid",
+		"description":      "Test task",
+		"project":          "TestProject",
+		"priority":         "H",
+		"due":              "2025-12-31T23:59:59.000Z",
+		"tags":             []string{"test", "important"},
+	}
+
+	body, _ := json.Marshal(requestBody)
+	req, err := http.NewRequest("POST", "/add-task", bytes.NewBuffer(body))
+	assert.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+
+	rr := httptest.NewRecorder()
+	AddTaskHandler(rr, req)
+
+	assert.Equal(t, http.StatusAccepted, rr.Code)
+}
+
+func Test_AddTaskHandler_WithoutDueDate(t *testing.T) {
+	GlobalJobQueue = NewJobQueue()
+
+	requestBody := map[string]interface{}{
+		"email":            "test@example.com",
+		"encryptionSecret": "secret",
+		"UUID":             "test-uuid",
+		"description":      "Test task without due date",
+		"project":          "TestProject",
+		"priority":         "M",
+		"tags":             []string{"test"},
+	}
+
+	body, _ := json.Marshal(requestBody)
+	req, err := http.NewRequest("POST", "/add-task", bytes.NewBuffer(body))
+	assert.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+
+	rr := httptest.NewRecorder()
+	AddTaskHandler(rr, req)
+
+	assert.Equal(t, http.StatusAccepted, rr.Code)
+}
+
+func Test_AddTaskHandler_MissingDescription(t *testing.T) {
+	requestBody := map[string]interface{}{
+		"email":            "test@example.com",
+		"encryptionSecret": "secret",
+		"UUID":             "test-uuid",
+		"description":      "",
+		"project":          "TestProject",
+		"priority":         "H",
+	}
+
+	body, _ := json.Marshal(requestBody)
+	req, err := http.NewRequest("POST", "/add-task", bytes.NewBuffer(body))
+	assert.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+
+	rr := httptest.NewRecorder()
+	AddTaskHandler(rr, req)
+
+	assert.Equal(t, http.StatusBadRequest, rr.Code)
+	assert.Contains(t, rr.Body.String(), "Description is required")
+}
+
+func Test_AddTaskHandler_WithDependencies(t *testing.T) {
+	GlobalJobQueue = NewJobQueue()
+
+	requestBody := map[string]interface{}{
+		"email":            "test@example.com",
+		"encryptionSecret": "secret",
+		"UUID":             "test-uuid",
+		"description":      "Task with dependencies",
+		"project":          "TestProject",
+		"priority":         "H",
+		"depends":          []string{"task-uuid-1", "task-uuid-2"},
+		"tags":             []string{"dependent"},
+	}
+
+	body, _ := json.Marshal(requestBody)
+	req, err := http.NewRequest("POST", "/add-task", bytes.NewBuffer(body))
+	assert.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+
+	rr := httptest.NewRecorder()
+	AddTaskHandler(rr, req)
+
+	assert.Equal(t, http.StatusAccepted, rr.Code)
+}
+
+func Test_AddTaskHandler_WithEmptyDependencies(t *testing.T) {
+	GlobalJobQueue = NewJobQueue()
+
+	requestBody := map[string]interface{}{
+		"email":            "test@example.com",
+		"encryptionSecret": "secret",
+		"UUID":             "test-uuid",
+		"description":      "Task with empty dependencies",
+		"project":          "TestProject",
+		"priority":         "M",
+		"depends":          []string{},
+		"tags":             []string{"test"},
+	}
+
+	body, _ := json.Marshal(requestBody)
+	req, err := http.NewRequest("POST", "/add-task", bytes.NewBuffer(body))
+	assert.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+
+	rr := httptest.NewRecorder()
+	AddTaskHandler(rr, req)
+
+	assert.Equal(t, http.StatusAccepted, rr.Code)
+}
+
+func Test_EditTaskHandler_WithDependencies(t *testing.T) {
+	GlobalJobQueue = NewJobQueue()
+
+	requestBody := map[string]interface{}{
+		"email":            "test@example.com",
+		"encryptionSecret": "secret",
+		"UUID":             "test-uuid",
+		"taskUUID":         "task-uuid",
+		"description":      "Edited task with dependencies",
+		"project":          "EditedProject",
+		"depends":          []string{"task-uuid-3"},
+		"tags":             []string{"edited", "dependent"},
+	}
+
+	body, _ := json.Marshal(requestBody)
+	req, err := http.NewRequest("POST", "/edit-task", bytes.NewBuffer(body))
+	assert.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+
+	rr := httptest.NewRecorder()
+	EditTaskHandler(rr, req)
+
+	assert.Equal(t, http.StatusAccepted, rr.Code)
+}
+
+func Test_AddTaskHandler_MalformedJSON(t *testing.T) {
+	malformedJSON := []byte(`{"email": "test@example.com", "description": `)
+
+	req, err := http.NewRequest("POST", "/add-task", bytes.NewBuffer(malformedJSON))
+	assert.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+
+	rr := httptest.NewRecorder()
+	AddTaskHandler(rr, req)
+
+	assert.Equal(t, http.StatusBadRequest, rr.Code)
+	assert.Contains(t, rr.Body.String(), "error decoding request body")
+}
+
+func Test_AddTaskHandler_NullDependencies(t *testing.T) {
+	GlobalJobQueue = NewJobQueue()
+
+	requestBody := map[string]interface{}{
+		"email":            "test@example.com",
+		"encryptionSecret": "secret",
+		"UUID":             "test-uuid",
+		"description":      "Task with null dependencies",
+		"project":          "TestProject",
+		"priority":         "M",
+		"depends":          nil,
+		"tags":             []string{"test"},
+	}
+
+	body, _ := json.Marshal(requestBody)
+	req, err := http.NewRequest("POST", "/add-task", bytes.NewBuffer(body))
+	assert.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+
+	rr := httptest.NewRecorder()
+	AddTaskHandler(rr, req)
+
+	assert.Equal(t, http.StatusAccepted, rr.Code)
+}
+
+func Test_AddTaskHandler_InvalidDueDateFormat(t *testing.T) {
+	GlobalJobQueue = NewJobQueue()
+
+	dueDate := "invalid-date"
+	requestBody := map[string]interface{}{
+		"email":            "test@example.com",
+		"encryptionSecret": "secret",
+		"UUID":             "test-uuid",
+		"description":      "Task with invalid due date",
+		"due":              &dueDate,
+	}
+
+	body, _ := json.Marshal(requestBody)
+	req, err := http.NewRequest("POST", "/add-task", bytes.NewBuffer(body))
+	assert.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+
+	rr := httptest.NewRecorder()
+	AddTaskHandler(rr, req)
+
+	assert.Equal(t, http.StatusBadRequest, rr.Code)
+	assert.Contains(t, rr.Body.String(), "Invalid due date format")
+}
+
+func Test_AddTaskHandler_WithAnnotations(t *testing.T) {
+	GlobalJobQueue = NewJobQueue()
+
+	requestBody := map[string]interface{}{
+		"email":            "test@example.com",
+		"encryptionSecret": "secret",
+		"UUID":             "test-uuid",
+		"description":      "Task with annotations",
+		"annotations": []map[string]interface{}{
+			{"description": "First annotation"},
+			{"description": "Second annotation"},
+		},
+	}
+
+	body, _ := json.Marshal(requestBody)
+	req, err := http.NewRequest("POST", "/add-task", bytes.NewBuffer(body))
+	assert.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+
+	rr := httptest.NewRecorder()
+	AddTaskHandler(rr, req)
+
+	assert.Equal(t, http.StatusAccepted, rr.Code)
+}
+
+func Test_AddTaskHandler_InvalidMethod(t *testing.T) {
+	req, err := http.NewRequest("GET", "/add-task", nil)
+	assert.NoError(t, err)
+
+	rr := httptest.NewRecorder()
+	AddTaskHandler(rr, req)
+
+	assert.Equal(t, http.StatusMethodNotAllowed, rr.Code)
+	assert.Contains(t, rr.Body.String(), "Invalid request method")
 }

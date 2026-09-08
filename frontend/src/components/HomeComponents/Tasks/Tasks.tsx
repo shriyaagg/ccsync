@@ -1,5 +1,17 @@
-import { useEffect, useState } from 'react';
-import { Task } from '../../utils/types';
+import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEditTask } from './UseEditTask';
+import { Task, Annotation } from '../../utils/types';
+import { ReportsView } from './ReportsView';
+import Fuse from 'fuse.js';
+import { useHotkeys } from '@/components/utils/use-hotkeys';
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogTitle,
+  DialogTrigger,
+  DialogClose,
+} from '@/components/ui/dialog';
 import {
   Table,
   TableBody,
@@ -10,63 +22,46 @@ import {
 } from '@/components/ui/table';
 import { Button } from '@/components/ui/button';
 import { toast } from 'react-toastify';
-import { Badge } from '@/components/ui/badge';
-import {
-  Dialog,
-  DialogClose,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from '../../ui/dialog';
-import {
-  ArrowUpDown,
-  CheckIcon,
-  CopyIcon,
-  Folder,
-  Loader2,
-  PencilIcon,
-  Tag,
-  Trash2Icon,
-  XIcon,
-} from 'lucide-react';
+import { ArrowUpDown, Loader2 } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import CopyToClipboard from 'react-copy-to-clipboard';
 import {
-  formattedDate,
   getDisplayedPages,
-  handleCopy,
-  handleDate,
   markTaskAsCompleted,
+  bulkMarkTasksAsCompleted,
   markTaskAsDeleted,
+  bulkMarkTasksAsDeleted,
   Props,
   sortTasks,
   sortTasksById,
+  getTimeSinceLastSync,
+  hashKey,
+  isOverdue,
+  getPinnedTasks,
+  togglePinnedTask,
+  calculateProjectStats,
+  calculateTagStats,
 } from './tasks-utils';
 import Pagination from './Pagination';
 import { url } from '@/components/utils/URLs';
-import {
-  Select,
-  SelectContent,
-  SelectGroup,
-  SelectItem,
-  SelectLabel,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
+import { MultiSelectFilter } from '@/components/ui/multi-select';
 import BottomBar from '../BottomBar/BottomBar';
 import {
   addTaskToBackend,
   editTaskOnBackend,
+  modifyTaskOnBackend,
   fetchTaskwarriorTasks,
   TasksDatabase,
 } from './hooks';
 import { debounce } from '@/components/utils/utils';
+import { Taskskeleton } from './TaskSkeleton';
+import { Key } from '@/components/ui/key-button';
+import { AddTaskdialog } from './AddTaskDialog';
+import { TaskDialog } from './TaskDialog';
+import { TaskFormData } from '../../utils/types';
 
 const db = new TasksDatabase();
+export let syncTasksWithTwAndDb: () => any;
 
 export const Tasks = (
   props: Props & {
@@ -74,55 +69,63 @@ export const Tasks = (
     setIsLoading: (val: boolean) => void;
   }
 ) => {
+  const [showReports, setShowReports] = useState(false);
+  const [uniqueTags, setUniqueTags] = useState<string[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [selectedTags, setSelectedTags] = useState<string[]>([]);
   const [uniqueProjects, setUniqueProjects] = useState<string[]>([]);
-  const [selectedProject, setSelectedProject] = useState<string>('all');
+  const [selectedProjects, setSelectedProjects] = useState<string[]>([]);
   const [tempTasks, setTempTasks] = useState<Task[]>([]);
-  const [selectedStatus, setSelectedStatus] = useState<string>('all');
-  const status = ['pending', 'completed', 'deleted'];
+  const [selectedStatuses, setSelectedStatuses] = useState<string[]>([]);
+  const status = ['pending', 'completed', 'deleted', 'overdue'];
+  const [projectStats, setProjectStats] = useState<
+    Record<string, { completed: number; total: number; percentage: number }>
+  >({});
+  const [tagStats, setTagStats] = useState<
+    Record<string, { completed: number; total: number; percentage: number }>
+  >({});
   const [currentPage, setCurrentPage] = useState<number>(1);
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
   const [idSortOrder, setIdSortOrder] = useState<'asc' | 'desc'>('asc');
 
-  const [newTask, setNewTask] = useState({
+  const [newTask, setNewTask] = useState<TaskFormData>({
     description: '',
     priority: '',
     project: '',
     due: '',
-    tags: [] as string[],
+    start: '',
+    entry: '',
+    wait: '',
+    end: '',
+    recur: '',
+    tags: [],
+    annotations: [],
+    depends: [],
   });
+  const [isCreatingNewProject, setIsCreatingNewProject] = useState(false);
   const [isAddTaskOpen, setIsAddTaskOpen] = useState(false);
   const [_isDialogOpen, setIsDialogOpen] = useState(false);
-  const [tagInput, setTagInput] = useState('');
-
-  const [isEditing, setIsEditing] = useState(false);
-  const [editedDescription, setEditedDescription] = useState('');
   const [_selectedTask, setSelectedTask] = useState<Task | null>(null);
-  const [editedTags, setEditedTags] = useState<string[]>(
-    _selectedTask?.tags || []
-  );
-  const [isEditingTags, setIsEditingTags] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
+  const [debouncedTerm, setDebouncedTerm] = useState('');
+  const [lastSyncTime, setLastSyncTime] = useState<number | null>(null);
+  const [pinnedTasks, setPinnedTasks] = useState<Set<string>>(new Set());
+  const [selectedTaskUUIDs, setSelectedTaskUUIDs] = useState<string[]>([]);
+  const [unsyncedTaskUuids, setUnsyncedTaskUuids] = useState<Set<string>>(
+    new Set()
+  );
+  const [autoSyncOnEdit, setAutoSyncOnEdit] = useState(true);
+  const tableRef = useRef<HTMLDivElement>(null);
+  const [hotkeysEnabled, setHotkeysEnabled] = useState(false);
+  const [selectedIndex, setSelectedIndex] = useState(0);
+  const {
+    state: editState,
+    updateState: updateEditState,
+    resetState: resetEditState,
+  } = useEditTask(_selectedTask);
 
-  // Debounced search handler
   const debouncedSearch = debounce((value: string) => {
-    if (!value) {
-      setTempTasks(
-        selectedProject === 'all' && selectedStatus === 'all'
-          ? tasks
-          : tempTasks
-      );
-      return;
-    }
-    const lowerValue = value.toLowerCase();
-    const filtered = tasks.filter(
-      (task) =>
-        task.description.toLowerCase().includes(lowerValue) ||
-        (task.project && task.project.toLowerCase().includes(lowerValue)) ||
-        (task.tags &&
-          task.tags.some((tag) => tag.toLowerCase().includes(lowerValue)))
-    );
-    setTempTasks(filtered);
+    setDebouncedTerm(value);
     setCurrentPage(1);
   }, 300);
 
@@ -132,19 +135,107 @@ export const Tasks = (
     debouncedSearch(value);
   };
 
-  const tasksPerPage = 10;
+  const handleTasksPerPageChange = (newTasksPerPage: number) => {
+    setTasksPerPage(newTasksPerPage);
+    setCurrentPage(1);
+
+    const hashedKey = hashKey('tasksPerPage', props.email);
+    localStorage.setItem(hashedKey, newTasksPerPage.toString());
+  };
+
+  const [tasksPerPage, setTasksPerPage] = useState<number>(10);
   const indexOfLastTask = currentPage * tasksPerPage;
   const indexOfFirstTask = indexOfLastTask - tasksPerPage;
   const currentTasks = tempTasks.slice(indexOfFirstTask, indexOfLastTask);
   const emptyRows = tasksPerPage - currentTasks.length;
   const paginate = (pageNumber: number) => setCurrentPage(pageNumber);
-  const totalPages = Math.ceil(tasks.length / tasksPerPage);
+  const totalPages = Math.ceil(tempTasks.length / tasksPerPage) || 1;
 
   useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement;
+      if (
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target instanceof HTMLSelectElement ||
+        _isDialogOpen ||
+        isAddTaskOpen ||
+        target.isContentEditable
+      ) {
+        return;
+      }
+
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setSelectedIndex((prev) => Math.min(prev + 1, currentTasks.length - 1));
+      }
+
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setSelectedIndex((prev) => Math.max(prev - 1, 0));
+      }
+
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        const task = currentTasks[selectedIndex];
+        if (task) {
+          document.getElementById(`task-row-${task.id}`)?.click();
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handler, true);
+    return () => window.removeEventListener('keydown', handler, true);
+  }, [hotkeysEnabled, selectedIndex, currentTasks]);
+
+  useEffect(() => {
+    const hashedKey = hashKey('tasksPerPage', props.email);
+    const storedTasksPerPage = localStorage.getItem(hashedKey);
+    if (storedTasksPerPage) {
+      setTasksPerPage(parseInt(storedTasksPerPage, 10));
+    }
+  }, [props.email]);
+  useEffect(() => {
     if (_selectedTask) {
-      setEditedTags(_selectedTask.tags || []);
     }
   }, [_selectedTask]);
+
+  useEffect(() => {
+    const hashedKey = hashKey('lastSyncTime', props.email);
+    const storedLastSyncTime = localStorage.getItem(hashedKey);
+    if (storedLastSyncTime) {
+      setLastSyncTime(parseInt(storedLastSyncTime, 10));
+    }
+  }, [props.email]);
+
+  // Load pinned tasks from localStorage
+  useEffect(() => {
+    setPinnedTasks(getPinnedTasks(props.email));
+  }, [props.email]);
+
+  // Load setting and listen for changes from navbar
+  useEffect(() => {
+    const hashedKey = hashKey('autoSyncOnEdit', props.email);
+    const stored = localStorage.getItem(hashedKey);
+    if (stored !== null) {
+      setAutoSyncOnEdit(stored === 'true');
+    } else {
+      localStorage.setItem(hashedKey, 'true');
+      setAutoSyncOnEdit(true);
+    }
+
+    const handleStorageChange = () => {
+      const updated = localStorage.getItem(hashedKey);
+      if (updated !== null) {
+        setAutoSyncOnEdit(updated === 'true');
+      }
+    };
+
+    window.addEventListener('autoSyncOnEditChanged', handleStorageChange);
+    return () => {
+      window.removeEventListener('autoSyncOnEditChanged', handleStorageChange);
+    };
+  }, [props.email]);
 
   useEffect(() => {
     const fetchTasksForEmail = async () => {
@@ -162,14 +253,46 @@ export const Tasks = (
           .filter((project) => project !== '')
           .sort((a, b) => (a > b ? 1 : -1));
         setUniqueProjects(filteredProjects);
+
+        const currentTags = new Set(
+          tasksFromDB.flatMap((task) => task.tags || [])
+        );
+        const currentTagsArray = Array.from(currentTags).filter(
+          (tag) => tag !== ''
+        );
+
+        const tagHistoryKey = hashKey('tagHistory', props.email);
+        const storedTagHistory = localStorage.getItem(tagHistoryKey);
+        const historicalTags = storedTagHistory
+          ? JSON.parse(storedTagHistory)
+          : [];
+
+        const allTags = new Set([...historicalTags, ...currentTagsArray]);
+        const filteredTags = Array.from(allTags).sort((a, b) =>
+          a > b ? 1 : -1
+        );
+        setUniqueTags(filteredTags);
+
+        localStorage.setItem(tagHistoryKey, JSON.stringify(filteredTags));
+
+        // Calculate completion stats
+        setProjectStats(calculateProjectStats(tasksFromDB));
+        setTagStats(calculateTagStats(tasksFromDB));
       } catch (error) {
         console.error('Error fetching tasks:', error);
       }
     };
+
     fetchTasksForEmail();
   }, [props.email]);
 
-  async function syncTasksWithTwAndDb() {
+  useEffect(() => {
+    if (!isAddTaskOpen) {
+      setIsCreatingNewProject(false);
+    }
+  }, [isAddTaskOpen]);
+
+  syncTasksWithTwAndDb = useCallback(async () => {
     try {
       const { email: user_email, encryptionSecret, UUID } = props;
       const taskwarriorTasks = await fetchTaskwarriorTasks({
@@ -178,7 +301,6 @@ export const Tasks = (
         UUID,
         backendURL: url.backendURL,
       });
-      console.log(taskwarriorTasks);
 
       await db.transaction('rw', db.tasks, async () => {
         await db.tasks.where('email').equals(user_email).delete();
@@ -191,52 +313,110 @@ export const Tasks = (
           .where('email')
           .equals(user_email)
           .toArray();
-        setTasks(sortTasksById(updatedTasks, 'desc'));
-        setTempTasks(sortTasksById(updatedTasks, 'desc'));
+        const sortedTasks = sortTasksById(updatedTasks, 'desc');
+        setTasks(sortedTasks);
+        setTempTasks(sortedTasks);
+
+        const projectsSet = new Set(sortedTasks.map((task) => task.project));
+        const filteredProjects = Array.from(projectsSet)
+          .filter((project) => project !== '')
+          .sort((a, b) => (a > b ? 1 : -1));
+        setUniqueProjects(filteredProjects);
+
+        const currentTags = new Set(
+          sortedTasks.flatMap((task) => task.tags || [])
+        );
+        const currentTagsArray = Array.from(currentTags).filter(
+          (tag) => tag !== ''
+        );
+
+        const tagHistoryKey = hashKey('tagHistory', user_email);
+        const storedTagHistory = localStorage.getItem(tagHistoryKey);
+        const historicalTags = storedTagHistory
+          ? JSON.parse(storedTagHistory)
+          : [];
+
+        const allTags = new Set([...historicalTags, ...currentTagsArray]);
+        const filteredTags = Array.from(allTags).sort((a, b) =>
+          a > b ? 1 : -1
+        );
+        setUniqueTags(filteredTags);
+
+        localStorage.setItem(tagHistoryKey, JSON.stringify(filteredTags));
+
+        // Calculate completion stats
+        setProjectStats(calculateProjectStats(sortedTasks));
+        setTagStats(calculateTagStats(sortedTasks));
       });
+
+      const currentTime = Date.now();
+      const hashedKey = hashKey('lastSyncTime', user_email);
+      localStorage.setItem(hashedKey, currentTime.toString());
+      setLastSyncTime(currentTime);
+
+      setUnsyncedTaskUuids(new Set());
+
       toast.success(`Tasks synced successfully!`);
     } catch (error) {
       console.error('Error syncing tasks:', error);
       toast.error(`Failed to sync tasks. Please try again.`);
+    } finally {
+      props.setIsLoading(false);
     }
-  }
+  }, [props.email, props.encryptionSecret, props.UUID]);
 
-  async function handleAddTask(
-    email: string,
-    encryptionSecret: string,
-    UUID: string,
-    description: string,
-    project: string,
-    priority: string,
-    due: string,
-    tags: string[]
-  ) {
-    if (handleDate(newTask.due)) {
-      try {
-        await addTaskToBackend({
-          email,
-          encryptionSecret,
-          UUID,
-          description,
-          project,
-          priority,
-          due,
-          tags,
-          backendURL: url.backendURL,
-        });
+  async function handleAddTask(task: TaskFormData) {
+    try {
+      await addTaskToBackend({
+        email: props.email,
+        encryptionSecret: props.encryptionSecret,
+        UUID: props.UUID,
+        description: task.description,
+        project: task.project,
+        priority: task.priority,
+        due: task.due || undefined,
+        start: task.start || '',
+        entry: task.entry,
+        wait: task.wait,
+        end: task.end || '',
+        recur: task.recur || '',
+        tags: task.tags,
+        annotations: task.annotations,
+        depends: task.depends,
+        backendURL: url.backendURL,
+      });
 
-        console.log('Task added successfully!');
-        setNewTask({
-          description: '',
-          priority: '',
-          project: '',
-          due: '',
-          tags: [],
-        });
-        setIsAddTaskOpen(false);
-      } catch (error) {
-        console.error('Failed to add task:', error);
+      if (task.tags && task.tags.length > 0) {
+        const tagHistoryKey = hashKey('tagHistory', props.email);
+        const storedTagHistory = localStorage.getItem(tagHistoryKey);
+        const historicalTags = storedTagHistory
+          ? JSON.parse(storedTagHistory)
+          : [];
+        const allTags = new Set([...historicalTags, ...task.tags]);
+        const updatedTags = Array.from(allTags).sort((a, b) =>
+          a > b ? 1 : -1
+        );
+        localStorage.setItem(tagHistoryKey, JSON.stringify(updatedTags));
+        setUniqueTags(updatedTags);
       }
+
+      setNewTask({
+        description: '',
+        priority: '',
+        project: '',
+        due: '',
+        start: '',
+        entry: '',
+        wait: '',
+        end: '',
+        recur: '',
+        tags: [],
+        annotations: [],
+        depends: [],
+      });
+      setIsAddTaskOpen(false);
+    } catch (error) {
+      console.error('Failed to add task:', error);
     }
   }
 
@@ -246,7 +426,16 @@ export const Tasks = (
     UUID: string,
     description: string,
     tags: string[],
-    taskID: string
+    taskUUID: string,
+    project: string,
+    start: string,
+    entry: string,
+    wait: string,
+    end: string,
+    depends: string[],
+    due: string,
+    recur: string,
+    annotations: Annotation[]
   ) {
     try {
       await editTaskOnBackend({
@@ -255,138 +444,661 @@ export const Tasks = (
         UUID,
         description,
         tags,
-        taskID,
+        taskUUID,
         backendURL: url.backendURL,
+        project,
+        start,
+        entry,
+        wait,
+        end,
+        depends,
+        due,
+        recur,
+        annotations,
       });
 
-      console.log('Task edited successfully!');
+      // Auto-sync after edit if enabled (on by default)
+      if (autoSyncOnEdit) {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        await syncTasksWithTwAndDb();
+      }
+
       setIsAddTaskOpen(false);
     } catch (error) {
       console.error('Failed to edit task:', error);
+      throw error;
     }
   }
+
+  const handleBulkComplete = async () => {
+    if (selectedTaskUUIDs.length === 0) return;
+
+    setUnsyncedTaskUuids((prev) => new Set([...prev, ...selectedTaskUUIDs]));
+
+    const success = await bulkMarkTasksAsCompleted(
+      props.email,
+      props.encryptionSecret,
+      props.UUID,
+      selectedTaskUUIDs
+    );
+
+    if (success) {
+      setSelectedTaskUUIDs([]);
+    }
+  };
+
+  const handleBulkDelete = async () => {
+    if (selectedTaskUUIDs.length === 0) return;
+
+    setUnsyncedTaskUuids((prev) => new Set([...prev, ...selectedTaskUUIDs]));
+
+    const success = await bulkMarkTasksAsDeleted(
+      props.email,
+      props.encryptionSecret,
+      props.UUID,
+      selectedTaskUUIDs
+    );
+
+    if (success) {
+      setSelectedTaskUUIDs([]);
+    }
+  };
 
   const handleIdSort = () => {
     const newOrder = idSortOrder === 'asc' ? 'desc' : 'asc';
     setIdSortOrder(newOrder);
-    setTasks(sortTasksById([...tasks], newOrder));
+    const sorted = sortTasksById([...tasks], newOrder);
+    setTasks(sorted);
+    setTempTasks(sorted);
+    setCurrentPage(1);
   };
 
   const handleSort = () => {
     const newOrder = sortOrder === 'asc' ? 'desc' : 'asc';
     setSortOrder(newOrder);
-    setTasks(sortTasks([...tasks], newOrder));
+    const sorted = sortTasks([...tasks], newOrder);
+    setTasks(sorted);
+    setTempTasks(sorted);
+    setCurrentPage(1);
   };
 
-  const handleEditClick = (description: string) => {
-    setIsEditing(true);
-    setEditedDescription(description);
+  const handleMarkComplete = async (taskuuid: string) => {
+    const taskToComplete = tasks.find((t) => t.uuid === taskuuid);
+    if (!taskToComplete) {
+      toast.error('Task not found');
+      return;
+    }
+
+    if (taskToComplete.depends && taskToComplete.depends.length > 0) {
+      const incompleteDependencies = taskToComplete.depends.filter(
+        (depUuid) => {
+          const depTask = tasks.find((t) => t.uuid === depUuid);
+          return depTask && depTask.status !== 'completed';
+        }
+      );
+
+      if (incompleteDependencies.length > 0) {
+        const incompleteDepNames = incompleteDependencies
+          .map((depUuid) => {
+            const depTask = tasks.find((t) => t.uuid === depUuid);
+            return depTask?.description || depUuid.substring(0, 8);
+          })
+          .join(', ');
+        toast.error(
+          `Cannot complete this task. Please complete these dependencies first: ${incompleteDepNames}`
+        );
+        return;
+      }
+    }
+
+    setUnsyncedTaskUuids((prev) => new Set([...prev, taskuuid]));
+
+    await markTaskAsCompleted(
+      props.email,
+      props.encryptionSecret,
+      props.UUID,
+      taskuuid
+    );
   };
 
-  const handleSaveClick = (task: Task) => {
-    task.description = editedDescription;
+  const handleMarkDelete = async (taskuuid: string) => {
+    setUnsyncedTaskUuids((prev) => new Set([...prev, taskuuid]));
+
+    await markTaskAsDeleted(
+      props.email,
+      props.encryptionSecret,
+      props.UUID,
+      taskuuid
+    );
+  };
+
+  const handleTogglePin = (taskUuid: string) => {
+    togglePinnedTask(props.email, taskUuid);
+    // Update the local state to trigger re-render
+    setPinnedTasks(getPinnedTasks(props.email));
+  };
+
+  const handleSelectTask = (task: Task, index: number) => {
+    setSelectedTask(task);
+    setSelectedIndex(index);
+    resetEditState();
+  };
+
+  const handleSaveDescription = (task: Task, description: string) => {
+    task.description = description;
+
+    setUnsyncedTaskUuids((prev) => new Set([...prev, task.uuid]));
+
     handleEditTaskOnBackend(
       props.email,
       props.encryptionSecret,
       props.UUID,
       task.description,
       task.tags,
-      task.id.toString()
+      task.uuid.toString(),
+      task.project,
+      task.start,
+      task.entry || '',
+      task.wait || '',
+      task.end || '',
+      task.depends || [],
+      task.due || '',
+      task.recur || '',
+      task.annotations || []
     );
-    setIsEditing(false);
   };
 
-  const handleCancelClick = () => {
-    setIsEditing(false);
-  };
+  const handleProjectSaveClick = (task: Task, project: string) => {
+    task.project = project;
 
-  const handleDialogOpenChange = (_isDialogOpen: boolean, task: any) => {
-    setIsDialogOpen(_isDialogOpen);
-    if (!_isDialogOpen) {
-      setIsEditing(false);
-      setEditedDescription('');
-    } else {
-      setSelectedTask(task);
-      setEditedDescription(task?.description || '');
-    }
-  };
+    setUnsyncedTaskUuids((prev) => new Set([...prev, task.uuid]));
 
-  const handleProjectChange = (value: string) => {
-    setSelectedProject(value);
-  };
-
-  // Handle adding a tag
-  const handleAddTag = () => {
-    if (tagInput && !newTask.tags.includes(tagInput, 0)) {
-      setNewTask({ ...newTask, tags: [...newTask.tags, tagInput] });
-      setTagInput(''); // Clear the input field
-    }
-  };
-
-  // Handle removing a tag
-  const handleRemoveTag = (tagToRemove: string) => {
-    setNewTask({
-      ...newTask,
-      tags: newTask.tags.filter((tag) => tag !== tagToRemove),
-    });
-  };
-
-  // useEffect to update tempTasks whenever selectedProject changes
-  useEffect(() => {
-    if (selectedProject === 'all') {
-      setTempTasks(tasks);
-    } else {
-      const filteredTasks = tasks.filter(
-        (task) => task.project === selectedProject
-      );
-      setTempTasks(sortTasksById(filteredTasks, 'desc'));
-    }
-  }, [selectedProject, tasks]);
-
-  const handleStatusChange = (value: string) => {
-    setSelectedStatus(value);
-  };
-
-  useEffect(() => {
-    if (selectedStatus === 'all') {
-      setTempTasks(tasks);
-    } else {
-      const filteredTasks = tasks.filter(
-        (task) => task.status === selectedStatus
-      );
-      setTempTasks(sortTasksById(filteredTasks, 'desc'));
-    }
-  }, [selectedStatus, tasks]);
-
-  const handleEditTagsClick = (task: Task) => {
-    setEditedTags(task.tags || []);
-    setIsEditingTags(true);
-  };
-
-  const handleSaveTags = (task: Task) => {
-    const currentTags = task.tags || []; // Default to an empty array if tags are null
-    const removedTags = currentTags.filter((tag) => !editedTags.includes(tag));
-    const updatedTags = editedTags.filter((tag) => tag.trim() !== ''); // Remove any empty tags
-    const tagsToRemove = removedTags.map((tag) => `-${tag}`); // Prefix `-` for removed tags
-    const finalTags = [...updatedTags, ...tagsToRemove]; // Combine updated and removed tags
-    console.log(finalTags);
-    // Call the backend function with updated tags
     handleEditTaskOnBackend(
       props.email,
       props.encryptionSecret,
       props.UUID,
       task.description,
-      finalTags,
-      task.id.toString()
+      task.tags,
+      task.uuid.toString(),
+      task.project,
+      task.start,
+      task.entry || '',
+      task.wait || '',
+      task.end || '',
+      task.depends || [],
+      task.due || '',
+      task.recur || '',
+      task.annotations || []
+    );
+  };
+
+  const handleWaitDateSaveClick = (task: Task, waitDate: string) => {
+    task.wait = waitDate;
+
+    setUnsyncedTaskUuids((prev) => new Set([...prev, task.uuid]));
+
+    handleEditTaskOnBackend(
+      props.email,
+      props.encryptionSecret,
+      props.UUID,
+      task.description,
+      task.tags,
+      task.uuid.toString(),
+      task.project,
+      task.start,
+      task.entry || '',
+      task.wait,
+      task.end || '',
+      task.depends || [],
+      task.due || '',
+      task.recur || '',
+      task.annotations || []
+    );
+  };
+
+  const handleStartDateSaveClick = (task: Task, startDate: string) => {
+    task.start = startDate;
+
+    setUnsyncedTaskUuids((prev) => new Set([...prev, task.uuid]));
+
+    handleEditTaskOnBackend(
+      props.email,
+      props.encryptionSecret,
+      props.UUID,
+      task.description,
+      task.tags,
+      task.uuid.toString(),
+      task.project,
+      task.start,
+      task.entry || '',
+      task.wait || '',
+      task.end || '',
+      task.depends || [],
+      task.due || '',
+      task.recur || '',
+      task.annotations || []
+    );
+  };
+
+  const handleEntryDateSaveClick = (task: Task, entryDate: string) => {
+    task.entry = entryDate;
+
+    setUnsyncedTaskUuids((prev) => new Set([...prev, task.uuid]));
+
+    handleEditTaskOnBackend(
+      props.email,
+      props.encryptionSecret,
+      props.UUID,
+      task.description,
+      task.tags,
+      task.uuid.toString(),
+      task.project,
+      task.start,
+      task.entry,
+      task.wait,
+      task.end,
+      task.depends || [],
+      task.due || '',
+      task.recur || '',
+      task.annotations || []
+    );
+  };
+
+  const handleEndDateSaveClick = (task: Task, endDate: string) => {
+    task.end = endDate;
+
+    setUnsyncedTaskUuids((prev) => new Set([...prev, task.uuid]));
+
+    handleEditTaskOnBackend(
+      props.email,
+      props.encryptionSecret,
+      props.UUID,
+      task.description,
+      task.tags,
+      task.uuid.toString(),
+      task.project,
+      task.start,
+      task.entry,
+      task.wait,
+      task.end,
+      task.depends || [],
+      task.due || '',
+      task.recur || '',
+      task.annotations || []
+    );
+  };
+
+  const handleDueDateSaveClick = (task: Task, dueDate: string) => {
+    task.due = dueDate;
+
+    setUnsyncedTaskUuids((prev) => new Set([...prev, task.uuid]));
+
+    handleEditTaskOnBackend(
+      props.email,
+      props.encryptionSecret,
+      props.UUID,
+      task.description,
+      task.tags,
+      task.uuid.toString(),
+      task.project,
+      task.start,
+      task.entry,
+      task.wait,
+      task.end,
+      task.depends || [],
+      task.due,
+      task.recur || '',
+      task.annotations || []
+    );
+  };
+
+  const handleDependsSaveClick = async (task: Task, depends: string[]) => {
+    try {
+      setUnsyncedTaskUuids((prev) => new Set([...prev, task.uuid]));
+
+      await handleEditTaskOnBackend(
+        props.email,
+        props.encryptionSecret,
+        props.UUID,
+        task.description,
+        task.tags,
+        task.uuid.toString(),
+        task.project,
+        task.start,
+        task.entry || '',
+        task.wait || '',
+        task.end || '',
+        depends,
+        task.due || '',
+        task.recur || '',
+        task.annotations || []
+      );
+    } catch (error) {
+      console.error('Failed to save dependencies:', error);
+
+      setUnsyncedTaskUuids((prev) => {
+        const newSet = new Set(prev);
+        newSet.delete(task.uuid);
+        return newSet;
+      });
+
+      toast.error('Failed to save dependencies. Please try again.', {
+        position: 'bottom-left',
+        autoClose: 3000,
+        hideProgressBar: false,
+        closeOnClick: true,
+        pauseOnHover: true,
+        draggable: true,
+        progress: undefined,
+      });
+    }
+  };
+
+  const handleRecurSaveClick = (task: Task, recur: string) => {
+    if (editState.editedRecur === 'none') {
+      updateEditState({ isEditingRecur: false });
+      return;
+    }
+
+    if (!editState.editedRecur || editState.editedRecur === '') {
+      updateEditState({ isEditingRecur: false });
+      return;
+    }
+
+    task.recur = recur;
+
+    setUnsyncedTaskUuids((prev) => new Set([...prev, task.uuid]));
+
+    handleEditTaskOnBackend(
+      props.email,
+      props.encryptionSecret,
+      props.UUID,
+      task.description,
+      task.tags,
+      task.uuid.toString(),
+      task.project,
+      task.start,
+      task.entry || '',
+      task.wait || '',
+      task.end || '',
+      task.depends || [],
+      task.due || '',
+      task.recur,
+      task.annotations || []
+    );
+  };
+
+  const handleDialogOpenChange = (isOpen: boolean, task?: Task) => {
+    setIsDialogOpen(isOpen);
+    if (!isOpen) {
+      resetEditState();
+      setSelectedTask(null);
+    } else if (task) {
+      setSelectedTask(task);
+    }
+  };
+
+  const sortWithPinnedAndOverdueOnTop = (tasks: Task[]) => {
+    return [...tasks].sort((a, b) => {
+      const aPinned = pinnedTasks.has(a.uuid);
+      const bPinned = pinnedTasks.has(b.uuid);
+
+      // Pinned tasks always on top
+      if (aPinned && !bPinned) return -1;
+      if (!aPinned && bPinned) return 1;
+
+      const aOverdue = a.status === 'pending' && isOverdue(a.due);
+      const bOverdue = b.status === 'pending' && isOverdue(b.due);
+
+      // Overdue tasks next (after pinned)
+      if (aOverdue && !bOverdue) return -1;
+      if (!aOverdue && bOverdue) return 1;
+
+      return 0;
+    });
+  };
+
+  useEffect(() => {
+    let filteredTasks = [...tasks];
+
+    if (selectedProjects.length > 0) {
+      filteredTasks = filteredTasks.filter(
+        (task) => task.project && selectedProjects.includes(task.project)
+      );
+    }
+
+    if (selectedStatuses.length > 0) {
+      filteredTasks = filteredTasks.filter((task) => {
+        const isTaskOverdue = task.status === 'pending' && isOverdue(task.due);
+
+        if (selectedStatuses.includes('overdue') && isTaskOverdue) {
+          return true;
+        }
+
+        return selectedStatuses.includes(task.status);
+      });
+    }
+
+    // Tag filter
+    if (selectedTags.length > 0) {
+      filteredTasks = filteredTasks.filter(
+        (task) =>
+          task.tags && task.tags.some((tag) => selectedTags.includes(tag))
+      );
+    }
+
+    // Fuzzy search
+    if (debouncedTerm.trim() !== '') {
+      const fuseOptions = {
+        keys: ['description', 'project', 'tags'],
+        threshold: 0.4,
+        ignoreLocation: true,
+        includeScore: false,
+      };
+
+      const fuse = new Fuse(filteredTasks, fuseOptions);
+      const results = fuse.search(debouncedTerm);
+
+      filteredTasks = results.map((r) => r.item);
+    }
+
+    filteredTasks = sortWithPinnedAndOverdueOnTop(filteredTasks);
+    setTempTasks(filteredTasks);
+  }, [
+    selectedProjects,
+    selectedTags,
+    selectedStatuses,
+    tasks,
+    debouncedTerm,
+    pinnedTasks,
+  ]);
+
+  const handleSaveTags = (task: Task, updatedTags: string[]) => {
+    const filteredUpdatedTags = updatedTags.filter((tag) => tag.trim() !== '');
+    const originalTags = task.tags || [];
+
+    // Calculate tag diff for backend (expects +tag for additions, -tag for removals)
+    const tagsToRemove = originalTags.filter(
+      (tag) => !filteredUpdatedTags.includes(tag)
     );
 
-    setIsEditingTags(false); // Exit editing mode
+    const tagsToAdd = filteredUpdatedTags.filter(
+      (tag) => !originalTags.includes(tag)
+    );
+
+    const tagDiff = [
+      ...tagsToRemove.map((tag) => `-${tag}`),
+      ...tagsToAdd.map((tag) => `+${tag}`),
+    ];
+
+    task.tags = filteredUpdatedTags;
+
+    // Recalculate uniqueTags from all current tasks + history (follows same pattern as initial load)
+    const currentTags = new Set(
+      tasks.flatMap((t) =>
+        t.uuid === task.uuid ? filteredUpdatedTags : t.tags || []
+      )
+    );
+    const currentTagsArray = Array.from(currentTags).filter(
+      (tag) => tag !== ''
+    );
+
+    const tagHistoryKey = hashKey('tagHistory', props.email);
+    const storedTagHistory = localStorage.getItem(tagHistoryKey);
+    const historicalTags = storedTagHistory ? JSON.parse(storedTagHistory) : [];
+
+    const allTags = new Set([...historicalTags, ...currentTagsArray]);
+    const filteredTags = Array.from(allTags).sort((a, b) => (a > b ? 1 : -1));
+    setUniqueTags(filteredTags);
+
+    localStorage.setItem(tagHistoryKey, JSON.stringify(filteredTags));
+
+    setUnsyncedTaskUuids((prev) => new Set([...prev, task.uuid]));
+
+    handleEditTaskOnBackend(
+      props.email,
+      props.encryptionSecret,
+      props.UUID,
+      task.description,
+      tagDiff,
+      task.uuid.toString(),
+      task.project,
+      task.start,
+      task.entry || '',
+      task.wait || '',
+      task.end || '',
+      task.depends || [],
+      task.due || '',
+      task.recur || '',
+      task.annotations || []
+    );
   };
 
-  const handleCancelTags = () => {
-    setIsEditingTags(false);
-    setEditedTags([]); // Reset tags
+  const handleSaveAnnotations = (task: Task, annotations: Annotation[]) => {
+    task.annotations = annotations;
+    handleEditTaskOnBackend(
+      props.email,
+      props.encryptionSecret,
+      props.UUID,
+      task.description,
+      task.tags,
+      task.uuid.toString(),
+      task.project,
+      task.start,
+      task.entry || '',
+      task.wait || '',
+      task.end || '',
+      task.depends || [],
+      task.due || '',
+      task.recur || '',
+      task.annotations
+    );
   };
+
+  const handleSavePriority = async (task: Task, priority: string) => {
+    try {
+      const priorityValue = priority === 'NONE' ? '' : priority;
+
+      setUnsyncedTaskUuids((prev) => new Set([...prev, task.uuid]));
+
+      await modifyTaskOnBackend({
+        email: props.email,
+        encryptionSecret: props.encryptionSecret,
+        UUID: props.UUID,
+        taskUUID: task.uuid.toString(),
+        description: task.description,
+        project: task.project || '',
+        priority: priorityValue,
+        status: task.status,
+        due: task.due || '',
+        tags: task.tags || [],
+        backendURL: url.backendURL,
+      });
+
+      toast.success('Priority updated successfully!');
+    } catch (error) {
+      console.error('Failed to update priority:', error);
+      toast.error('Failed to update priority. Please try again.');
+    }
+  };
+
+  useHotkeys(['f'], () => {
+    if (!showReports) {
+      document.getElementById('search')?.focus();
+    }
+  });
+  useHotkeys(['a'], () => {
+    if (!showReports) {
+      document.getElementById('add-new-task')?.click();
+    }
+  });
+  useHotkeys(['r'], () => {
+    if (!showReports) {
+      document.getElementById('sync-task')?.click();
+    }
+  });
+  useHotkeys(['p'], () => {
+    if (!showReports) {
+      document.getElementById('projects')?.click();
+    }
+  });
+  useHotkeys(['s'], () => {
+    if (!showReports) {
+      document.getElementById('status')?.click();
+    }
+  });
+  useHotkeys(['t'], () => {
+    if (!showReports) {
+      document.getElementById('tags')?.click();
+    }
+  });
+  useHotkeys(['c'], () => {
+    if (!showReports && !_isDialogOpen) {
+      const task = currentTasks[selectedIndex];
+      if (!task) return;
+      const openBtn = document.getElementById(`task-row-${task.id}`);
+      openBtn?.click();
+      setTimeout(() => {
+        const confirmBtn = document.getElementById(
+          `mark-task-complete-${task.id}`
+        );
+        confirmBtn?.click();
+      }, 200);
+    } else {
+      if (_isDialogOpen) {
+        const task = currentTasks[selectedIndex];
+        if (!task) return;
+        const confirmBtn = document.getElementById(
+          `mark-task-complete-${task.id}`
+        );
+        confirmBtn?.click();
+      }
+    }
+  });
+
+  useHotkeys(['d'], () => {
+    if (!showReports && !_isDialogOpen) {
+      const task = currentTasks[selectedIndex];
+      if (!task) return;
+      const openBtn = document.getElementById(`task-row-${task.id}`);
+      openBtn?.click();
+      setTimeout(() => {
+        const confirmBtn = document.getElementById(
+          `mark-task-as-deleted-${task.id}`
+        );
+        confirmBtn?.click();
+      }, 200);
+    } else {
+      if (_isDialogOpen) {
+        const task = currentTasks[selectedIndex];
+        if (!task) return;
+        const confirmBtn = document.getElementById(
+          `mark-task-as-deleted-${task.id}`
+        );
+        confirmBtn?.click();
+      }
+    }
+  });
 
   return (
     <section
@@ -395,12 +1107,16 @@ export const Tasks = (
     >
       <BottomBar
         projects={uniqueProjects}
-        selectedProject={selectedProject}
-        setSelectedProject={setSelectedProject}
+        selectedProjects={selectedProjects}
+        setSelectedProject={setSelectedProjects}
         status={['pending', 'completed', 'deleted']}
-        selectedStatus={selectedStatus}
-        setSelectedStatus={setSelectedStatus}
+        selectedStatuses={selectedStatuses}
+        setSelectedStatus={setSelectedStatuses}
+        selectedTags={selectedTags}
+        tags={uniqueTags}
+        setSelectedTag={setSelectedTags}
       />
+
       <h2
         data-testid="tasks"
         className="text-3xl md:text-4xl font-bold text-center"
@@ -409,805 +1125,449 @@ export const Tasks = (
           Tasks
         </span>
       </h2>
-      {tasks.length != 0 ? (
-        <>
-          <div className="mt-10 pl-1 md:pl-4 pr-1 md:pr-4 bg-muted/50 border shadow-md rounded-lg p-4 h-full py-12">
-            {/* Table for displaying tasks */}
-            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
-              <h3 className="ml-4 mb-4 mr-4 text-2xl mt-0 md:text-2xl font-bold">
-                <span className="inline bg-gradient-to-r from-[#F596D3]  to-[#D247BF] text-transparent bg-clip-text">
-                  Here are{' '}
+      <div className="flex justify-center lg:justify-end w-full px-4 mb-4 mt-4">
+        <Button variant="outline" onClick={() => setShowReports(!showReports)}>
+          {showReports ? 'Show Tasks' : 'Show Reports'}
+        </Button>
+        {/* Mobile-only Sync button */}
+        <Button
+          className="lg:hidden ml-2 relative"
+          variant="outline"
+          onClick={async () => {
+            props.setIsLoading(true);
+            await syncTasksWithTwAndDb();
+            props.setIsLoading(false);
+          }}
+          disabled={props.isLoading}
+        >
+          {props.isLoading ? (
+            <Loader2 className="mx-1 size-5 animate-spin" />
+          ) : (
+            <div className="flex items-center">
+              Sync
+              {unsyncedTaskUuids.size > 0 && (
+                <span className="absolute -top-2 -right-2 flex h-5 w-5 items-center justify-center rounded-full bg-red-500 text-[10px] text-white font-bold shadow-sm">
+                  {unsyncedTaskUuids.size}
                 </span>
-                your tasks
-              </h3>
-              <div className="flex flex-col md:flex-row items-center gap-2 md:gap-4">
-                <Input
-                  type="text"
-                  placeholder="Search tasks..."
-                  value={searchTerm}
-                  onChange={handleSearchChange}
-                  className="w-full md:w-64"
-                  data-testid="task-search-bar"
-                />
-                <Select onValueChange={handleProjectChange}>
-                  <SelectTrigger className="w-[180px] hidden sm:flex mr-2">
-                    <SelectValue placeholder="Select a project" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectGroup>
-                      <SelectLabel>Select Project</SelectLabel>
-                      <SelectItem value="all">All Projects</SelectItem>
-                      {uniqueProjects.map((project) => (
-                        <SelectItem
-                          key={project}
-                          value={project ? project : 'all'}
-                        >
-                          {project}
-                        </SelectItem>
-                      ))}
-                    </SelectGroup>
-                  </SelectContent>
-                </Select>
-                <Select
-                  value={selectedStatus || ''}
-                  onValueChange={handleStatusChange}
-                >
-                  <SelectTrigger className="w-[120px]  hidden sm:flex mr-2">
-                    <SelectValue placeholder="Select a project" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectGroup>
-                      <SelectLabel>Status</SelectLabel>
-                      <SelectItem value="all">All</SelectItem>
-                      {status.map((status) => (
-                        <SelectItem key={status} value={status}>
-                          {status}
-                        </SelectItem>
-                      ))}
-                    </SelectGroup>
-                  </SelectContent>
-                </Select>
-                <div className="pr-2">
-                  <Dialog open={isAddTaskOpen} onOpenChange={setIsAddTaskOpen}>
-                    <DialogTrigger asChild>
-                      <Button
-                        variant="outline"
-                        onClick={() => setIsAddTaskOpen(true)}
-                      >
-                        Add Task
-                      </Button>
-                    </DialogTrigger>
-                    <DialogContent>
-                      <DialogHeader>
-                        <DialogTitle>
-                          <span className="ml-0 mb-0 mr-0 text-2xl mt-0 md:text-2xl font-bold">
-                            <span className="inline bg-gradient-to-r from-[#F596D3]  to-[#D247BF] text-transparent bg-clip-text">
-                              Add a{' '}
-                            </span>
-                            new task
-                          </span>
-                        </DialogTitle>
-                        <DialogDescription>
-                          Fill in the details below to add a new task.
-                        </DialogDescription>
-                      </DialogHeader>
-                      <div className="space-y-4">
-                        <div className="grid grid-cols-4 items-center gap-4">
-                          <Label htmlFor="description" className="text-right">
-                            Description
-                          </Label>
-                          <Input
-                            id="description"
-                            name="description"
-                            type="text"
-                            value={newTask.description}
-                            onChange={(e) =>
-                              setNewTask({
-                                ...newTask,
-                                description: e.target.value,
-                              })
-                            }
-                            required
-                            className="col-span-3"
-                          />
-                        </div>
-                        <div className="grid grid-cols-4 items-center gap-4">
-                          <Label htmlFor="priority" className="text-right">
-                            Priority
-                          </Label>
-                          <div className="col-span-1 flex items-center">
-                            <select
-                              id="priority"
-                              name="priority"
-                              value={newTask.priority}
-                              onChange={(e) =>
-                                setNewTask({
-                                  ...newTask,
-                                  priority: e.target.value,
-                                })
-                              }
-                              className="border rounded-md px-2 py-1 w-full bg-black text-white"
-                            >
-                              <option value="H">H</option>
-                              <option value="M">M</option>
-                              <option value="L">L</option>
-                            </select>
-                          </div>
-                        </div>
-
-                        <div className="grid grid-cols-4 items-center gap-4">
-                          <Label htmlFor="description" className="text-right">
-                            Project
-                          </Label>
-                          <Input
-                            id="project"
-                            name="project"
-                            type=""
-                            value={newTask.project}
-                            onChange={(e) =>
-                              setNewTask({
-                                ...newTask,
-                                project: e.target.value,
-                              })
-                            }
-                            className="col-span-3"
-                          />
-                        </div>
-                        <div className="grid grid-cols-4 items-center gap-4">
-                          <Label htmlFor="description" className="text-right">
-                            Due
-                          </Label>
-                          <Input
-                            id="due"
-                            name="due"
-                            placeholder="YYYY-MM-DD"
-                            value={newTask.due}
-                            onChange={(e) =>
-                              setNewTask({ ...newTask, due: e.target.value })
-                            }
-                            required
-                            className="col-span-3"
-                          />
-                        </div>
-                        <div className="grid grid-cols-4 items-center gap-4">
-                          <Label htmlFor="description" className="text-right">
-                            Tags
-                          </Label>
-                          <Input
-                            id="tags"
-                            name="tags"
-                            placeholder="Add a tag"
-                            value={tagInput}
-                            onChange={(e) => setTagInput(e.target.value)}
-                            onKeyDown={(e) =>
-                              e.key === 'Enter' && handleAddTag()
-                            } // Allow adding tag on pressing Enter
-                            required
-                            className="col-span-3"
-                          />
-                        </div>
-
-                        <div className="mt-2">
-                          {newTask.tags.length > 0 && (
-                            <div className="flex flex-wrap gap-2">
-                              {newTask.tags.map((tag, index) => (
-                                <Badge key={index}>
-                                  <span>{tag}</span>
-                                  <button
-                                    type="button"
-                                    className="ml-2 text-red-500"
-                                    onClick={() => handleRemoveTag(tag)}
-                                  >
-                                    ✖
-                                  </button>
-                                </Badge>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                      <DialogFooter>
-                        <Button
-                          variant="secondary"
-                          onClick={() => setIsAddTaskOpen(false)}
-                        >
-                          Cancel
-                        </Button>
-                        <Button
-                          className="mb-1"
-                          variant="default"
-                          onClick={() =>
-                            handleAddTask(
-                              props.email,
-                              props.encryptionSecret,
-                              props.UUID,
-                              newTask.description,
-                              newTask.project,
-                              newTask.priority,
-                              newTask.due,
-                              newTask.tags
-                            )
-                          }
-                        >
-                          Add Task
-                        </Button>
-                      </DialogFooter>
-                    </DialogContent>
-                  </Dialog>
-                </div>
-                <Button variant="outline" onClick={syncTasksWithTwAndDb}>
-                  Sync
-                </Button>
-              </div>
+              )}
             </div>
-
-            <div className="overflow-x-auto">
-              <Table className="w-full text-white">
-                <TableHeader>
-                  <TableRow>
-                    <TableHead
-                      className="py-2 w-0.20/6"
-                      onClick={handleIdSort}
-                      style={{
-                        cursor: 'pointer',
-                        display: 'flex',
-                        alignItems: 'center',
-                      }}
-                    >
-                      ID{' '}
-                      {idSortOrder === 'asc' ? (
-                        <ArrowUpDown className="ml-0.5 h-4 w-4" />
-                      ) : (
-                        <ArrowUpDown className="ml-0.5 h-4 w-4 transform rotate-180" />
-                      )}
-                    </TableHead>
-                    <TableHead className="py-2 w-5/6">Description</TableHead>
-                    <TableHead
-                      className="py-2 w-0.20/6"
-                      onClick={handleSort}
-                      style={{
-                        cursor: 'pointer',
-                        display: 'flex',
-                        alignItems: 'center',
-                      }}
-                    >
-                      Status <ArrowUpDown className="ml-0.5 h-4 w-4" />
-                    </TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {/* Display tasks */}
-                  {currentTasks.map((task: Task, index: number) => (
-                    <Dialog
-                      onOpenChange={(_isDialogOpen) =>
-                        handleDialogOpenChange(_isDialogOpen, task)
-                      }
-                      key={index}
-                    >
-                      <DialogTrigger asChild>
-                        <TableRow key={index} className="border-b">
-                          {/* Display task details */}
-                          <TableCell className="py-2">
-                            <span className="text-s text-foreground">
-                              {task.id}
-                            </span>
-                          </TableCell>
-                          <TableCell className="flex items-center space-x-2 py-2">
-                            {task.priority === 'H' && (
-                              <div className="flex items-center justify-center w-3 h-3 bg-red-500 rounded-full border-0 min-w-3"></div>
-                            )}
-                            {task.priority === 'M' && (
-                              <div className="flex items-center justify-center w-3 h-3 bg-yellow-500 rounded-full border-0 min-w-3"></div>
-                            )}
-                            {task.priority != 'H' && task.priority != 'M' && (
-                              <div className="flex items-center justify-center w-3 h-3 bg-green-500 rounded-full border-0 min-w-3"></div>
-                            )}
-                            <span className="text-s text-foreground">
-                              {task.description}
-                            </span>
-                            {task.project != '' && (
-                              <Badge variant={'secondary'}>
-                                <Folder className="pr-2" />
-                                {task.project === '' ? '' : task.project}
-                              </Badge>
-                            )}
-                          </TableCell>
-                          <TableCell className="py-2">
-                            <Badge
-                              variant={
-                                task.status === 'pending'
-                                  ? 'secondary'
-                                  : task.status === 'deleted'
-                                    ? 'destructive'
-                                    : 'default'
+          )}
+        </Button>
+      </div>
+      {showReports ? (
+        <ReportsView tasks={tasks} />
+      ) : (
+        <div
+          ref={tableRef}
+          onMouseEnter={() => setHotkeysEnabled(true)}
+          onMouseLeave={() => setHotkeysEnabled(false)}
+        >
+          {tasks.length != 0 ? (
+            <>
+              <div className="mt-10 pl-1 md:pl-4 pr-1 md:pr-4 bg-muted/50 border shadow-md rounded-lg p-4 h-full pt-12 pb-6 relative overflow-y-auto">
+                {/* Table for displaying tasks */}
+                <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+                  <h3 className="ml-4 mb-4 mr-4 text-2xl mt-0 md:text-2xl font-bold">
+                    <span className="inline bg-gradient-to-r from-[#F596D3]  to-[#D247BF] text-transparent bg-clip-text">
+                      Here are{' '}
+                    </span>
+                    your tasks
+                  </h3>
+                  <div className="sm:flex flex-row w-full items-center gap-2 md:gap-4">
+                    <Input
+                      id="search"
+                      type="text"
+                      placeholder="Search tasks..."
+                      value={searchTerm}
+                      onChange={handleSearchChange}
+                      className="flex-1 min-w-[150px]"
+                      data-testid="task-search-bar"
+                      icon={<Key label="f" />}
+                    />
+                    <MultiSelectFilter
+                      id="projects"
+                      title="Projects"
+                      options={uniqueProjects}
+                      selectedValues={selectedProjects}
+                      onSelectionChange={setSelectedProjects}
+                      className="hidden lg:flex min-w-[140px]"
+                      icon={<Key label="p" />}
+                      completionStats={projectStats}
+                    />
+                    <MultiSelectFilter
+                      id="status"
+                      title="Status"
+                      options={status}
+                      selectedValues={selectedStatuses}
+                      onSelectionChange={setSelectedStatuses}
+                      className="hidden lg:flex min-w-[140px]"
+                      icon={<Key label="s" />}
+                    />
+                    <MultiSelectFilter
+                      id="tags"
+                      title="Tags"
+                      options={uniqueTags}
+                      selectedValues={selectedTags}
+                      onSelectionChange={setSelectedTags}
+                      className="hidden lg:flex min-w-[140px]"
+                      icon={<Key label="t" />}
+                      completionStats={tagStats}
+                    />
+                    <div className="flex justify-center">
+                      <AddTaskdialog
+                        onOpenChange={handleDialogOpenChange}
+                        isOpen={isAddTaskOpen}
+                        setIsOpen={setIsAddTaskOpen}
+                        newTask={newTask}
+                        setNewTask={setNewTask}
+                        onSubmit={handleAddTask}
+                        isCreatingNewProject={isCreatingNewProject}
+                        setIsCreatingNewProject={setIsCreatingNewProject}
+                        uniqueProjects={uniqueProjects}
+                        uniqueTags={uniqueTags}
+                        allTasks={tasks}
+                      />
+                    </div>
+                    <div className="hidden lg:flex flex-col items-end gap-2">
+                      <Button
+                        id="sync-task"
+                        variant="outline"
+                        className="relative"
+                        onClick={async () => {
+                          props.setIsLoading(true);
+                          await syncTasksWithTwAndDb();
+                          props.setIsLoading(false);
+                        }}
+                      >
+                        Sync
+                        <Key label="r" />
+                        {unsyncedTaskUuids.size > 0 && (
+                          <span className="absolute -top-2 -right-2 flex h-5 w-5 items-center justify-center rounded-full bg-red-500 text-[10px] text-white font-bold shadow-sm">
+                            {unsyncedTaskUuids.size}
+                          </span>
+                        )}
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+                <span className="text-xs text-muted-foreground ml-4">
+                  {getTimeSinceLastSync(lastSyncTime)}
+                </span>
+                <div className="overflow-x-auto">
+                  <Table className="w-full text-white">
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>
+                          <input
+                            type="checkbox"
+                            checked={
+                              currentTasks.filter((t) => t.status !== 'deleted')
+                                .length > 0 &&
+                              selectedTaskUUIDs.length ===
+                                currentTasks.filter(
+                                  (t) => t.status !== 'deleted'
+                                ).length
+                            }
+                            onChange={(e) => {
+                              if (e.target.checked) {
+                                setSelectedTaskUUIDs(
+                                  currentTasks
+                                    .filter((task) => task.status !== 'deleted')
+                                    .map((task) => task.uuid)
+                                );
+                              } else {
+                                setSelectedTaskUUIDs([]);
                               }
-                            >
-                              {task.status === 'completed'
-                                ? 'C'
-                                : task.status === 'deleted'
-                                  ? 'D'
-                                  : 'P'}
-                            </Badge>
-                          </TableCell>
+                            }}
+                          />
+                        </TableHead>
+                        <TableHead
+                          className="py-2 w-0.20/6"
+                          onClick={handleIdSort}
+                          style={{
+                            cursor: 'pointer',
+                            display: 'flex',
+                            alignItems: 'center',
+                          }}
+                        >
+                          ID{' '}
+                          {idSortOrder === 'asc' ? (
+                            <ArrowUpDown className="ml-0.5 h-4 w-4" />
+                          ) : (
+                            <ArrowUpDown className="ml-0.5 h-4 w-4 transform rotate-180" />
+                          )}
+                        </TableHead>
+                        <TableHead className="py-2 w-5/6">
+                          Description
+                        </TableHead>
+                        <TableHead
+                          className="py-2 w-0.20/6"
+                          onClick={handleSort}
+                          style={{
+                            cursor: 'pointer',
+                            display: 'flex',
+                            alignItems: 'center',
+                          }}
+                        >
+                          Status <ArrowUpDown className="ml-0.5 h-4 w-4" />
+                        </TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {/* Display tasks */}
+                      {props.isLoading ? (
+                        <Taskskeleton count={tasksPerPage} />
+                      ) : (
+                        currentTasks.map((task: Task, index: number) => (
+                          <TaskDialog
+                            key={task.uuid}
+                            index={index}
+                            selectedTaskUUIDs={selectedTaskUUIDs}
+                            onCheckboxChange={(
+                              uuid: string,
+                              checked: boolean
+                            ) => {
+                              if (checked) {
+                                setSelectedTaskUUIDs([
+                                  ...selectedTaskUUIDs,
+                                  uuid,
+                                ]);
+                              } else {
+                                setSelectedTaskUUIDs(
+                                  selectedTaskUUIDs.filter((id) => id !== uuid)
+                                );
+                              }
+                            }}
+                            onSelectTask={handleSelectTask}
+                            selectedIndex={selectedIndex}
+                            task={task}
+                            isOpen={
+                              _isDialogOpen && _selectedTask?.uuid === task.uuid
+                            }
+                            onOpenChange={handleDialogOpenChange}
+                            editState={editState}
+                            onUpdateState={updateEditState}
+                            allTasks={tasks}
+                            uniqueProjects={uniqueProjects}
+                            uniqueTags={uniqueTags}
+                            isCreatingNewProject={isCreatingNewProject}
+                            setIsCreatingNewProject={setIsCreatingNewProject}
+                            onSaveDescription={handleSaveDescription}
+                            onSaveTags={handleSaveTags}
+                            onSavePriority={handleSavePriority}
+                            onSaveProject={handleProjectSaveClick}
+                            onSaveWaitDate={handleWaitDateSaveClick}
+                            onSaveStartDate={handleStartDateSaveClick}
+                            onSaveEntryDate={handleEntryDateSaveClick}
+                            onSaveEndDate={handleEndDateSaveClick}
+                            onSaveDueDate={handleDueDateSaveClick}
+                            onSaveDepends={handleDependsSaveClick}
+                            onSaveRecur={handleRecurSaveClick}
+                            onSaveAnnotations={handleSaveAnnotations}
+                            onMarkComplete={handleMarkComplete}
+                            onMarkDeleted={handleMarkDelete}
+                            isOverdue={isOverdue}
+                            isUnsynced={unsyncedTaskUuids.has(task.uuid)}
+                            isPinned={pinnedTasks.has(task.uuid)}
+                            onTogglePin={handleTogglePin}
+                          />
+                        ))
+                      )}
+
+                      {/* Display empty rows */}
+                      {!props.isLoading && emptyRows > 0 && (
+                        <TableRow style={{ height: 52 * emptyRows }}>
+                          <TableCell colSpan={6} />
                         </TableRow>
-                      </DialogTrigger>
-                      <DialogContent className="sm:max-w-[625px] max-h-[90vh] flex flex-col">
-                        <DialogHeader>
-                          <DialogTitle>
-                            <span className="ml-0 mb-0 mr-0 text-2xl mt-0 md:text-2xl font-bold">
-                              <span className="inline bg-gradient-to-r from-[#F596D3]  to-[#D247BF] text-transparent bg-clip-text">
-                                Task{' '}
-                              </span>
-                              Details
-                            </span>
+                      )}
+                    </TableBody>
+                  </Table>
+                </div>
+                <div className="flex items-baseline mt-4">
+                  <div className="flex-1 flex justify-start">
+                    <div className="flex items-center gap-2">
+                      <Label
+                        htmlFor="tasks-per-page"
+                        className="text-sm text-muted-foreground flex-shrink-0"
+                      >
+                        Show:
+                      </Label>
+                      <select
+                        id="tasks-per-page"
+                        value={tasksPerPage}
+                        onChange={(e) =>
+                          handleTasksPerPageChange(parseInt(e.target.value, 10))
+                        }
+                        className="border border[1px] rounded-md px-2 py-1 bg-white dark:bg-black text-black dark:text-white h-10 text-sm"
+                      >
+                        <option value="5">5</option>
+                        <option value="10">10</option>
+                        <option value="20">20</option>
+                        <option value="50">50</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* Pagination */}
+                  <div className="flex-1 flex justify-center">
+                    <Pagination
+                      currentPage={currentPage}
+                      totalPages={totalPages}
+                      paginate={paginate}
+                      getDisplayedPages={getDisplayedPages}
+                    />
+                  </div>
+                  <div className="flex-1">
+                    {/* Intentionally empty for spacing */}
+                  </div>
+                </div>
+                {selectedTaskUUIDs.length > 0 && (
+                  <div
+                    className="sticky bottom-0 left-1/2 -translate-x-1/2 w-fit bg-black border border-white rounded-lg shadow-xl p-1.5 mt-4 flex gap-4 z-50"
+                    data-testid="bulk-action-bar"
+                  >
+                    {/* Bulk Complete Dialog */}
+                    {!selectedTaskUUIDs.some((uuid) => {
+                      const task = currentTasks.find((t) => t.uuid === uuid);
+                      return task?.status === 'completed';
+                    }) && (
+                      <Dialog>
+                        <DialogTrigger asChild>
+                          <Button
+                            variant="default"
+                            data-testid="bulk-complete-btn"
+                          >
+                            Mark {selectedTaskUUIDs.length}{' '}
+                            {selectedTaskUUIDs.length === 1 ? 'Task' : 'Tasks'}{' '}
+                            Completed
+                          </Button>
+                        </DialogTrigger>
+
+                        <DialogContent>
+                          <DialogTitle className="text-2xl font-bold">
+                            <span className="bg-gradient-to-r from-[#F596D3] to-[#D247BF] text-transparent bg-clip-text">
+                              Are you
+                            </span>{' '}
+                            sure?
                           </DialogTitle>
-                        </DialogHeader>
 
-                        {/* Scrollable content */}
-                        <div className="overflow-y-auto flex-1">
-                          <DialogDescription asChild>
-                            <Table>
-                              <TableBody>
-                                <TableRow>
-                                  <TableCell>ID:</TableCell>
-                                  <TableCell>{task.id}</TableCell>
-                                </TableRow>
-                                <TableRow>
-                                  <TableCell>Description:</TableCell>
-                                  <TableCell>
-                                    {isEditing ? (
-                                      <>
-                                        <div className="flex items-center">
-                                          <Input
-                                            id={`description-${task.id}`}
-                                            name={`description-${task.id}`}
-                                            type="text"
-                                            value={editedDescription}
-                                            onChange={(e) =>
-                                              setEditedDescription(
-                                                e.target.value
-                                              )
-                                            }
-                                            className="flex-grow mr-2"
-                                          />
-                                          <Button
-                                            variant="ghost"
-                                            size="icon"
-                                            onClick={() =>
-                                              handleSaveClick(task)
-                                            }
-                                          >
-                                            <CheckIcon className="h-4 w-4 text-green-500" />
-                                          </Button>
-                                          <Button
-                                            variant="ghost"
-                                            size="icon"
-                                            onClick={handleCancelClick}
-                                          >
-                                            <XIcon className="h-4 w-4 text-red-500" />
-                                          </Button>
-                                        </div>
-                                      </>
-                                    ) : (
-                                      <>
-                                        <span>{task.description}</span>
-                                        <Button
-                                          variant="ghost"
-                                          size="icon"
-                                          onClick={() =>
-                                            handleEditClick(task.description)
-                                          }
-                                        >
-                                          <PencilIcon className="h-4 w-4 text-gray-500" />
-                                        </Button>
-                                      </>
-                                    )}
-                                  </TableCell>
-                                </TableRow>
-                                <TableRow>
-                                  <TableCell>Due:</TableCell>
-                                  <TableCell>
-                                    {formattedDate(task.due)}
-                                  </TableCell>
-                                </TableRow>
-                                <TableRow>
-                                  <TableCell>Start:</TableCell>
-                                  <TableCell>
-                                    {formattedDate(task.start)}
-                                  </TableCell>
-                                </TableRow>
-                                <TableRow>
-                                  <TableCell>End:</TableCell>
-                                  <TableCell>
-                                    {formattedDate(task.end)}
-                                  </TableCell>
-                                </TableRow>
-                                <TableRow>
-                                  <TableCell>Wait:</TableCell>
-                                  <TableCell>
-                                    {formattedDate(task.wait)}
-                                  </TableCell>
-                                </TableRow>
-                                <TableRow>
-                                  <TableCell>Depends:</TableCell>
-                                  <TableCell>{task.depends}</TableCell>
-                                </TableRow>
-                                <TableRow>
-                                  <TableCell>Recur:</TableCell>
-                                  <TableCell>{task.recur}</TableCell>
-                                </TableRow>
-                                <TableRow>
-                                  <TableCell>RType:</TableCell>
-                                  <TableCell>{task.rtype}</TableCell>
-                                </TableRow>
-                                <TableRow>
-                                  <TableCell>Priority:</TableCell>
-                                  <TableCell>{task.priority}</TableCell>
-                                </TableRow>
-                                <TableRow>
-                                  <TableCell>Project:</TableCell>
-                                  <TableCell>{task.project}</TableCell>
-                                </TableRow>
-                                <TableRow>
-                                  <TableCell>Status:</TableCell>
-                                  <TableCell>{task.status}</TableCell>
-                                </TableRow>
-                                <TableRow>
-                                  <TableCell>Tags:</TableCell>
-                                  <TableCell>
-                                    {isEditingTags ? (
-                                      <div className="flex items-center">
-                                        <Input
-                                          type="text"
-                                          value={editedTags.join(', ')}
-                                          onChange={(e) =>
-                                            setEditedTags(
-                                              e.target.value
-                                                .split(',')
-                                                .map((tag) => tag.trim())
-                                            )
-                                          }
-                                          className="flex-grow mr-2"
-                                        />
-                                        <Button
-                                          variant="ghost"
-                                          size="icon"
-                                          onClick={() => handleSaveTags(task)}
-                                        >
-                                          <CheckIcon className="h-4 w-4 text-green-500" />
-                                        </Button>
-                                        <Button
-                                          variant="ghost"
-                                          size="icon"
-                                          onClick={handleCancelTags}
-                                        >
-                                          <XIcon className="h-4 w-4 text-red-500" />
-                                        </Button>
-                                      </div>
-                                    ) : (
-                                      <div className="flex items-center">
-                                        {task.tags !== null &&
-                                        task.tags.length >= 1 ? (
-                                          task.tags.map((tag, index) => (
-                                            <Badge
-                                              key={index}
-                                              variant="secondary"
-                                              className="mr-2"
-                                            >
-                                              <Tag className="pr-3" />
-                                              {tag}
-                                            </Badge>
-                                          ))
-                                        ) : (
-                                          <span>No Tags</span>
-                                        )}
-                                        <Button
-                                          variant="ghost"
-                                          size="icon"
-                                          onClick={() =>
-                                            handleEditTagsClick(task)
-                                          }
-                                        >
-                                          <PencilIcon className="h-4 w-4 text-gray-500" />
-                                        </Button>
-                                      </div>
-                                    )}
-                                  </TableCell>
-                                </TableRow>
-                                <TableRow>
-                                  <TableCell>Urgency:</TableCell>
-                                  <TableCell>{task.urgency}</TableCell>
-                                </TableRow>
-                                <TableRow>
-                                  <TableCell>UUID:</TableCell>
-                                  <TableCell className="flex items-center">
-                                    <span>{task.uuid}</span>
-                                    <CopyToClipboard
-                                      text={task.uuid}
-                                      onCopy={() => handleCopy('Task UUID')}
-                                    >
-                                      <button className="bg-blue-500 hover:bg-gray-900 text-white font-bold py-2 px-2 rounded ml-2">
-                                        <CopyIcon />
-                                      </button>
-                                    </CopyToClipboard>
-                                  </TableCell>
-                                </TableRow>
-                              </TableBody>
-                            </Table>
-                          </DialogDescription>
-                        </div>
+                          <DialogFooter className="flex flex-row justify-center">
+                            <DialogClose asChild>
+                              <Button
+                                className="mr-5"
+                                onClick={async () => {
+                                  await handleBulkComplete();
+                                }}
+                              >
+                                Yes
+                              </Button>
+                            </DialogClose>
 
-                        {/* Non-scrollable footer */}
-                        <DialogFooter className="flex flex-row justify-end pt-4">
-                          {task.status == 'pending' ? (
-                            <Dialog>
-                              <DialogTrigger asChild className="mr-5">
-                                <Button>Mark As Completed</Button>
-                              </DialogTrigger>
-                              <DialogContent>
-                                <DialogTitle>
-                                  <span className="ml-0 mb-0 mr-0 text-2xl mt-0 md:text-2xl font-bold">
-                                    <span className="inline bg-gradient-to-r from-[#F596D3]  to-[#D247BF] text-transparent bg-clip-text">
-                                      Are you{' '}
-                                    </span>
-                                    sure?
-                                  </span>
-                                </DialogTitle>
-                                <DialogFooter className="flex flex-row justify-center">
-                                  <DialogClose asChild>
-                                    <Button
-                                      className="mr-5"
-                                      onClick={() =>
-                                        markTaskAsCompleted(
-                                          props.email,
-                                          props.encryptionSecret,
-                                          props.UUID,
-                                          task.uuid
-                                        )
-                                      }
-                                    >
-                                      Yes
-                                    </Button>
-                                  </DialogClose>
-                                  <DialogClose asChild>
-                                    <Button variant={'destructive'}>No</Button>
-                                  </DialogClose>
-                                </DialogFooter>
-                              </DialogContent>
-                            </Dialog>
-                          ) : null}
+                            <DialogClose asChild>
+                              <Button variant="destructive">No</Button>
+                            </DialogClose>
+                          </DialogFooter>
+                        </DialogContent>
+                      </Dialog>
+                    )}
 
-                          {task.status != 'deleted' ? (
-                            <Dialog>
-                              <DialogTrigger asChild>
-                                <Button
-                                  className="mr-4"
-                                  variant={'destructive'}
-                                >
-                                  <Trash2Icon />
-                                </Button>
-                              </DialogTrigger>
-                              <DialogContent>
-                                <DialogTitle>
-                                  <span className="ml-0 mb-0 mr-0 text-2xl mt-0 md:text-2xl font-bold">
-                                    <span className="inline bg-gradient-to-r from-[#F596D3]  to-[#D247BF] text-transparent bg-clip-text">
-                                      Are you{' '}
-                                    </span>
-                                    sure?
-                                  </span>
-                                </DialogTitle>
-                                <DialogFooter className="flex flex-row justify-center">
-                                  <DialogClose asChild>
-                                    <Button
-                                      className="mr-5"
-                                      onClick={() =>
-                                        markTaskAsDeleted(
-                                          props.email,
-                                          props.encryptionSecret,
-                                          props.UUID,
-                                          task.uuid
-                                        )
-                                      }
-                                    >
-                                      Yes
-                                    </Button>
-                                  </DialogClose>
-                                  <DialogClose asChild>
-                                    <Button variant={'destructive'}>No</Button>
-                                  </DialogClose>
-                                </DialogFooter>
-                              </DialogContent>
-                            </Dialog>
-                          ) : null}
+                    {/* Bulk Delete Dialog */}
+                    <Dialog>
+                      <DialogTrigger asChild>
+                        <Button
+                          variant="destructive"
+                          data-testid="bulk-delete-btn"
+                        >
+                          Delete {selectedTaskUUIDs.length}{' '}
+                          {selectedTaskUUIDs.length === 1 ? 'Task' : 'Tasks'}
+                        </Button>
+                      </DialogTrigger>
+
+                      <DialogContent>
+                        <DialogTitle className="text-2xl font-bold">
+                          <span className="bg-gradient-to-r from-[#F596D3] to-[#D247BF] text-transparent bg-clip-text">
+                            Are you
+                          </span>{' '}
+                          sure?
+                        </DialogTitle>
+
+                        <DialogFooter className="flex flex-row justify-center">
                           <DialogClose asChild>
-                            <Button className="bg-white">Close</Button>
+                            <Button
+                              className="mr-5"
+                              onClick={async () => {
+                                await handleBulkDelete();
+                              }}
+                            >
+                              Yes
+                            </Button>
+                          </DialogClose>
+
+                          <DialogClose asChild>
+                            <Button variant="destructive">No</Button>
                           </DialogClose>
                         </DialogFooter>
                       </DialogContent>
                     </Dialog>
-                  ))}
-
-                  {/* Display empty rows */}
-                  {emptyRows > 0 && (
-                    <TableRow style={{ height: 52 * emptyRows }}>
-                      <TableCell colSpan={6} />
-                    </TableRow>
-                  )}
-                </TableBody>
-              </Table>
-            </div>
-            {/* Pagination */}
-            <Pagination
-              currentPage={currentPage}
-              totalPages={totalPages}
-              paginate={paginate}
-              getDisplayedPages={getDisplayedPages}
-            />
-          </div>
-        </>
-      ) : (
-        <>
-          <div className="mt-10 pl-1 md:pl-4 pr-1 md:pr-4 bg-muted/50 border shadow-md rounded-lg p-4 h-full py-12">
-            <div className="flex items-center justify-between">
-              <h3 className="ml-4 mb-4 mr-4 text-2xl mt-0 md:text-2xl font-bold">
-                <span className="inline bg-gradient-to-r from-[#F596D3]  to-[#D247BF] text-transparent bg-clip-text">
-                  No tasks{' '}
-                </span>
-                found
-              </h3>
-              <div className="flex items-center justify-left">
-                <div className="pr-2">
-                  <Dialog open={isAddTaskOpen} onOpenChange={setIsAddTaskOpen}>
-                    <DialogTrigger asChild>
+                  </div>
+                )}
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="mt-10 pl-1 md:pl-4 pr-1 md:pr-4 bg-muted/50 border shadow-md rounded-lg p-4 h-full pt-12 pb-6">
+                <div className="flex items-center justify-between">
+                  <h3 className="ml-4 mb-4 mr-4 text-2xl mt-0 md:text-2xl font-bold">
+                    <span className="inline bg-gradient-to-r from-[#F596D3]  to-[#D247BF] text-transparent bg-clip-text">
+                      No tasks{' '}
+                    </span>
+                    found
+                  </h3>
+                  <div className="flex items-center justify-left">
+                    <div className="pr-2">
+                      <AddTaskdialog
+                        onOpenChange={handleDialogOpenChange}
+                        isOpen={isAddTaskOpen}
+                        setIsOpen={setIsAddTaskOpen}
+                        newTask={newTask}
+                        setNewTask={setNewTask}
+                        onSubmit={handleAddTask}
+                        isCreatingNewProject={isCreatingNewProject}
+                        setIsCreatingNewProject={setIsCreatingNewProject}
+                        uniqueProjects={uniqueProjects}
+                        uniqueTags={uniqueTags}
+                        allTasks={tasks}
+                      />
+                    </div>
+                    <div className="flex flex-col items-end gap-2">
                       <Button
                         variant="outline"
-                        onClick={() => setIsAddTaskOpen(true)}
+                        onClick={async () => {
+                          props.setIsLoading(true);
+                          await syncTasksWithTwAndDb();
+                          props.setIsLoading(false);
+                        }}
+                        disabled={props.isLoading}
                       >
-                        Add Task
+                        {props.isLoading ? (
+                          <Loader2 className="mx-1 size-5 animate-spin" />
+                        ) : (
+                          'Sync'
+                        )}
                       </Button>
-                    </DialogTrigger>
-                    <DialogContent>
-                      <DialogHeader>
-                        <DialogTitle>
-                          <span className="ml-0 mb-0 mr-0 text-2xl mt-0 md:text-2xl font-bold">
-                            <span className="inline bg-gradient-to-r from-[#F596D3]  to-[#D247BF] text-transparent bg-clip-text">
-                              Add a{' '}
-                            </span>
-                            new task
-                          </span>
-                        </DialogTitle>
-                        <DialogDescription>
-                          Fill in the details below to add a new task.
-                        </DialogDescription>
-                      </DialogHeader>
-                      <div className="space-y-4">
-                        <div className="grid grid-cols-4 items-center gap-4">
-                          <Label htmlFor="description" className="text-right">
-                            Description
-                          </Label>
-                          <Input
-                            id="description"
-                            name="description"
-                            type="text"
-                            value={newTask.description}
-                            onChange={(e) =>
-                              setNewTask({
-                                ...newTask,
-                                description: e.target.value,
-                              })
-                            }
-                            className="col-span-3"
-                          />
-                        </div>
-                        <div className="grid grid-cols-4 items-center gap-4">
-                          <Label htmlFor="priority" className="text-right">
-                            Priority
-                          </Label>
-                          <div className="col-span-1 flex items-center">
-                            <select
-                              id="priority"
-                              name="priority"
-                              value={newTask.priority}
-                              onChange={(e) =>
-                                setNewTask({
-                                  ...newTask,
-                                  priority: e.target.value,
-                                })
-                              }
-                              className="border rounded-md px-2 py-1 w-full bg-black text-white"
-                            >
-                              <option value="H">H</option>
-                              <option value="M">M</option>
-                              <option value="L">L</option>
-                            </select>
-                          </div>
-                        </div>
-
-                        <div className="grid grid-cols-4 items-center gap-4">
-                          <Label htmlFor="description" className="text-right">
-                            Project
-                          </Label>
-                          <Input
-                            id="project"
-                            name="project"
-                            type=""
-                            value={newTask.project}
-                            onChange={(e) =>
-                              setNewTask({
-                                ...newTask,
-                                project: e.target.value,
-                              })
-                            }
-                            className="col-span-3"
-                          />
-                        </div>
-                        <div className="grid grid-cols-4 items-center gap-4">
-                          <Label htmlFor="description" className="text-right">
-                            Due
-                          </Label>
-                          <Input
-                            id="due"
-                            name="due"
-                            placeholder="YYYY-MM-DD"
-                            value={newTask.due}
-                            onChange={(e) =>
-                              setNewTask({ ...newTask, due: e.target.value })
-                            }
-                            className="col-span-3"
-                          />
-                        </div>
-                      </div>
-                      <DialogFooter>
-                        <Button
-                          variant="secondary"
-                          onClick={() => setIsAddTaskOpen(false)}
-                        >
-                          Cancel
-                        </Button>
-                        <Button
-                          className="mb-1"
-                          variant="default"
-                          onClick={() =>
-                            handleAddTask(
-                              props.email,
-                              props.encryptionSecret,
-                              props.UUID,
-                              newTask.description,
-                              newTask.project,
-                              newTask.priority,
-                              newTask.due,
-                              newTask.tags
-                            )
-                          }
-                        >
-                          Add Task
-                        </Button>
-                      </DialogFooter>
-                    </DialogContent>
-                  </Dialog>
+                    </div>
+                  </div>
                 </div>
-                <Button
-                  variant="outline"
-                  onClick={async () => {
-                    props.setIsLoading(true);
-                    await syncTasksWithTwAndDb();
-                    props.setIsLoading(false);
-                  }}
-                  disabled={props.isLoading}
-                >
-                  {props.isLoading ? (
-                    <Loader2 className="mx-1 size-5 animate-spin" />
-                  ) : (
-                    'Sync'
-                  )}
-                </Button>
+                <span className="text-xs text-muted-foreground ml-4">
+                  {getTimeSinceLastSync(lastSyncTime)}
+                </span>
+                <div className="text-l ml-5 text-muted-foreground mt-5 mb-5">
+                  Add a new task or sync tasks from taskwarrior to view tasks.
+                </div>
               </div>
-            </div>
-            <div className="text-l ml-5 text-muted-foreground mt-5 mb-5">
-              Add a new task or sync tasks from taskwarrior to view tasks.
-            </div>
-          </div>
-        </>
+            </>
+          )}
+        </div>
       )}
     </section>
   );

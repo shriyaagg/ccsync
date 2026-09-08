@@ -1,36 +1,36 @@
 import { render, screen, fireEvent } from '@testing-library/react';
 import Pagination from '../Pagination';
 
+const mockPaginate = jest.fn();
+const mockGetDisplayedPages = jest.fn((totalPages, _currentPage) => {
+  const pages = [];
+  for (let i = 1; i <= totalPages; i++) {
+    pages.push(i);
+  }
+  return pages;
+});
+
+beforeEach(() => {
+  mockPaginate.mockClear();
+});
+const renderComponent = (currentPage: number, totalPages: number) => {
+  return render(
+    <Pagination
+      currentPage={currentPage}
+      totalPages={totalPages}
+      paginate={mockPaginate}
+      getDisplayedPages={mockGetDisplayedPages}
+    />
+  );
+};
 describe('Pagination', () => {
-  const mockPaginate = jest.fn();
-  const mockGetDisplayedPages = jest.fn((totalPages, _currentPage) => {
-    const pages = [];
-    for (let i = 1; i <= totalPages; i++) {
-      pages.push(i);
-    }
-    return pages;
-  });
-
-  beforeEach(() => {
-    mockPaginate.mockClear();
-  });
-
-  const renderComponent = (currentPage: number, totalPages: number) => {
-    return render(
-      <Pagination
-        currentPage={currentPage}
-        totalPages={totalPages}
-        paginate={mockPaginate}
-        getDisplayedPages={mockGetDisplayedPages}
-      />
-    );
-  };
-
   it('renders correctly with given props', () => {
     renderComponent(1, 5);
 
     expect(screen.getByText('Previous')).toBeInTheDocument();
     expect(screen.getByText('Next')).toBeInTheDocument();
+    expect(screen.getByText('First')).toBeInTheDocument();
+    expect(screen.getByText('Last')).toBeInTheDocument();
     expect(screen.getByText('1')).toBeInTheDocument();
     expect(screen.getByText('2')).toBeInTheDocument();
     expect(screen.getByText('3')).toBeInTheDocument();
@@ -43,6 +43,7 @@ describe('Pagination', () => {
 
     expect(screen.getByText('Previous')).toBeDisabled();
     expect(screen.getByText('Next')).toBeEnabled();
+    expect(screen.getByText('First')).toBeDisabled();
   });
 
   it('disables the "Next" button on the last page', () => {
@@ -50,6 +51,7 @@ describe('Pagination', () => {
 
     expect(screen.getByText('Previous')).toBeEnabled();
     expect(screen.getByText('Next')).toBeDisabled();
+    expect(screen.getByText('Last')).toBeDisabled();
   });
 
   it('calls paginate with correct arguments when a page button is clicked', () => {
@@ -70,5 +72,30 @@ describe('Pagination', () => {
 
     fireEvent.click(screen.getByText('Next'));
     expect(mockPaginate).toHaveBeenCalledWith(4);
+  });
+
+  it('calls paginate with correct arguments when "First" and "Last" buttons are clicked', () => {
+    renderComponent(3, 5);
+
+    fireEvent.click(screen.getByText('First'));
+    expect(mockPaginate).toHaveBeenCalledWith(1);
+
+    fireEvent.click(screen.getByText('Last'));
+    expect(mockPaginate).toHaveBeenCalledWith(5);
+  });
+});
+
+describe('Pagination Component using snapshot', () => {
+  test('renders correctly with current page = 1', () => {
+    const { asFragment } = renderComponent(1, 5);
+    expect(asFragment()).toMatchSnapshot('current page = 1');
+  });
+  test('renders correctly with current page in the middle', () => {
+    const { asFragment } = renderComponent(3, 5);
+    expect(asFragment()).toMatchSnapshot('current page in the middle');
+  });
+  test('renders correctly with current page at the end', () => {
+    const { asFragment } = renderComponent(5, 5);
+    expect(asFragment()).toMatchSnapshot('current page at the end');
   });
 });

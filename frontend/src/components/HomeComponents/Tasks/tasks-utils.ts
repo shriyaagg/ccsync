@@ -29,6 +29,7 @@ export const markTaskAsCompleted = async (
 
     const response = await fetch(backendURL, {
       method: 'POST',
+      credentials: 'include',
       body: JSON.stringify({
         email: email,
         encryptionSecret: encryptionSecret,
@@ -37,13 +38,95 @@ export const markTaskAsCompleted = async (
       }),
     });
 
-    if (response) {
-      console.log('Task marked as completed successfully!');
-    } else {
+    if (!response) {
       console.error('Failed to mark task as completed');
     }
   } catch (error) {
     console.error('Error marking task as completed:', error);
+  }
+};
+
+export const bulkMarkTasksAsCompleted = async (
+  email: string,
+  encryptionSecret: string,
+  UUID: string,
+  taskUUIDs: string[]
+) => {
+  try {
+    const backendURL = url.backendURL + `complete-tasks`;
+
+    const response = await fetch(backendURL, {
+      method: 'POST',
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        email,
+        encryptionSecret,
+        UUID,
+        taskuuids: taskUUIDs,
+      }),
+    });
+
+    if (response.ok) {
+      toast.success(
+        `${taskUUIDs.length} ${
+          taskUUIDs.length === 1 ? 'task' : 'tasks'
+        } marked as completed.`
+      );
+      return true;
+    } else {
+      toast.error('Bulk completion failed!');
+      console.error('Failed bulk completion');
+      return false;
+    }
+  } catch (error) {
+    console.error('Error in bulk complete:', error);
+    toast.error('Bulk complete failed');
+    return false;
+  }
+};
+
+export const bulkMarkTasksAsDeleted = async (
+  email: string,
+  encryptionSecret: string,
+  UUID: string,
+  taskUUIDs: string[]
+) => {
+  try {
+    const backendURL = url.backendURL + `delete-tasks`;
+
+    const response = await fetch(backendURL, {
+      method: 'POST',
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        email,
+        encryptionSecret,
+        UUID,
+        taskuuids: taskUUIDs,
+      }),
+    });
+
+    if (response.ok) {
+      toast.success(
+        `${taskUUIDs.length} ${
+          taskUUIDs.length === 1 ? 'task' : 'tasks'
+        } deleted.`
+      );
+      return true;
+    } else {
+      toast.error('Bulk deletion failed!');
+      console.error('Failed bulk deletion');
+      return false;
+    }
+  } catch (error) {
+    console.error('Error in bulk delete:', error);
+    toast.error('Bulk delete failed');
+    return false;
   }
 };
 
@@ -58,6 +141,7 @@ export const markTaskAsDeleted = async (
 
     const response = await fetch(backendURL, {
       method: 'POST',
+      credentials: 'include',
       body: JSON.stringify({
         email: email,
         encryptionSecret: encryptionSecret,
@@ -66,9 +150,7 @@ export const markTaskAsDeleted = async (
       }),
     });
 
-    if (response) {
-      console.log('Task marked as deleted successfully!');
-    } else {
+    if (!response) {
       console.error('Failed to mark task as deleted');
     }
   } catch (error) {
@@ -100,6 +182,34 @@ export const formattedDate = (dateString: string) => {
   } catch (error) {
     return dateString;
   }
+};
+
+export const parseTaskwarriorDate = (dateString: string) => {
+  if (!dateString) return null;
+
+  const year = dateString.substring(0, 4);
+  const month = dateString.substring(4, 6);
+  const day = dateString.substring(6, 8);
+  const hour = dateString.substring(9, 11);
+  const min = dateString.substring(11, 13);
+  const sec = dateString.substring(13, 15);
+  const parsed = `${year}-${month}-${day}T${hour}:${min}:${sec}Z`;
+
+  const date = new Date(parsed);
+  return isNaN(date.getTime()) ? null : date;
+};
+
+export const isOverdue = (due?: string) => {
+  if (!due) return false;
+
+  const dueDate = parseTaskwarriorDate(due);
+  if (!dueDate) return false;
+  dueDate.setHours(0, 0, 0, 0);
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  return dueDate < today;
 };
 
 export const sortTasksById = (tasks: Task[], order: 'asc' | 'desc') => {
@@ -142,4 +252,146 @@ export const handleDate = (v: string) => {
     return false;
   }
   return true;
+};
+
+export const getTimeSinceLastSync = (
+  lastSyncTimestamp: number | null
+): string => {
+  if (!lastSyncTimestamp) {
+    return 'Never synced';
+  }
+
+  const now = Date.now();
+  const diffMs = now - lastSyncTimestamp;
+  const diffSeconds = Math.floor(diffMs / 1000);
+  const diffMinutes = Math.floor(diffSeconds / 60);
+  const diffHours = Math.floor(diffMinutes / 60);
+  const diffDays = Math.floor(diffHours / 24);
+
+  if (diffSeconds < 60) {
+    return `Last updated ${diffSeconds} second${
+      diffSeconds !== 1 ? 's' : ''
+    } ago`;
+  } else if (diffMinutes < 60) {
+    return `Last updated ${diffMinutes} minute${
+      diffMinutes !== 1 ? 's' : ''
+    } ago`;
+  } else if (diffHours < 24) {
+    return `Last updated ${diffHours} hour${diffHours !== 1 ? 's' : ''} ago`;
+  } else {
+    return `Last updated ${diffDays} day${diffDays !== 1 ? 's' : ''} ago`;
+  }
+};
+
+export const hashKey = (key: string, email: string): string => {
+  const str = key + email;
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i);
+    hash = (hash << 5) - hash + char;
+    hash = hash & hash;
+  }
+  return Math.abs(hash).toString(36);
+};
+
+export const getPinnedTasks = (email: string): Set<string> => {
+  const hashedKey = hashKey('pinnedTasks', email);
+  const stored = localStorage.getItem(hashedKey);
+  if (!stored) return new Set();
+  try {
+    return new Set(JSON.parse(stored));
+  } catch {
+    return new Set();
+  }
+};
+
+export const savePinnedTasks = (
+  email: string,
+  pinnedUuids: Set<string>
+): void => {
+  const hashedKey = hashKey('pinnedTasks', email);
+  localStorage.setItem(hashedKey, JSON.stringify([...pinnedUuids]));
+};
+
+export const togglePinnedTask = (email: string, taskUuid: string): boolean => {
+  const pinnedTasks = getPinnedTasks(email);
+  const isPinned = pinnedTasks.has(taskUuid);
+
+  if (isPinned) {
+    pinnedTasks.delete(taskUuid);
+  } else {
+    pinnedTasks.add(taskUuid);
+  }
+
+  savePinnedTasks(email, pinnedTasks);
+  return !isPinned;
+};
+
+export const isTaskPinned = (email: string, taskUuid: string): boolean => {
+  return getPinnedTasks(email).has(taskUuid);
+};
+
+export const calculateProjectStats = (
+  tasks: Task[]
+): Record<string, { completed: number; total: number; percentage: number }> => {
+  const stats: Record<
+    string,
+    { completed: number; total: number; percentage: number }
+  > = {};
+
+  tasks.forEach((task) => {
+    const project = task.project;
+    if (project && project !== '') {
+      if (!stats[project]) {
+        stats[project] = { completed: 0, total: 0, percentage: 0 };
+      }
+
+      stats[project].total += 1;
+      if (task.status === 'completed') {
+        stats[project].completed += 1;
+      }
+    }
+  });
+
+  // Calculate percentages
+  Object.keys(stats).forEach((project) => {
+    const { completed, total } = stats[project];
+    stats[project].percentage =
+      total > 0 ? Math.round((completed / total) * 100) : 0;
+  });
+
+  return stats;
+};
+
+export const calculateTagStats = (
+  tasks: Task[]
+): Record<string, { completed: number; total: number; percentage: number }> => {
+  const stats: Record<
+    string,
+    { completed: number; total: number; percentage: number }
+  > = {};
+
+  tasks.forEach((task) => {
+    const tags = task.tags || [];
+    tags.forEach((tag) => {
+      if (tag && tag !== '') {
+        if (!stats[tag]) {
+          stats[tag] = { completed: 0, total: 0, percentage: 0 };
+        }
+
+        stats[tag].total += 1;
+        if (task.status === 'completed') {
+          stats[tag].completed += 1;
+        }
+      }
+    });
+  });
+
+  Object.keys(stats).forEach((tag) => {
+    const { completed, total } = stats[tag];
+    stats[tag].percentage =
+      total > 0 ? Math.round((completed / total) * 100) : 0;
+  });
+
+  return stats;
 };

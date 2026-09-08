@@ -12,18 +12,16 @@ export const fetchTaskwarriorTasks = async ({
   UUID: string;
   backendURL: string;
 }) => {
-  const fullURL =
-    backendURL +
-    `/tasks?email=${encodeURIComponent(
-      email
-    )}&encryptionSecret=${encodeURIComponent(
-      encryptionSecret
-    )}&UUID=${encodeURIComponent(UUID)}`;
+  const fullURL = `${backendURL}tasks`;
 
   const response = await fetch(fullURL, {
     method: 'GET',
+    credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
+      'X-User-Email': email,
+      'X-Encryption-Secret': encryptionSecret,
+      'X-User-UUID': UUID,
     },
   });
 
@@ -42,7 +40,14 @@ export const addTaskToBackend = async ({
   project,
   priority,
   due,
+  start,
+  entry,
+  wait,
+  end,
+  recur,
   tags,
+  annotations,
+  depends,
   backendURL,
 }: {
   email: string;
@@ -51,22 +56,58 @@ export const addTaskToBackend = async ({
   description: string;
   project: string;
   priority: string;
-  due: string;
+  due?: string;
+  start: string;
+  entry: string;
+  wait: string;
+  end?: string;
+  recur: string;
   tags: string[];
+  annotations: { entry: string; description: string }[];
+  depends?: string[];
   backendURL: string;
 }) => {
+  const requestBody: any = {
+    email,
+    encryptionSecret,
+    UUID,
+    description,
+    project,
+    priority,
+    entry,
+    wait,
+    tags,
+  };
+
+  if (due !== undefined && due !== '') {
+    requestBody.due = due;
+  }
+
+  if (start !== undefined && start !== '') {
+    requestBody.start = start;
+  }
+
+  if (depends && depends.length > 0) {
+    requestBody.depends = depends;
+  }
+
+  if (end !== undefined && end !== '') {
+    requestBody.end = end;
+  }
+
+  if (recur !== undefined && recur !== '') {
+    requestBody.recur = recur;
+  }
+
+  requestBody.annotations = annotations.filter(
+    (annotation) =>
+      annotation.description && annotation.description.trim() !== ''
+  );
+
   const response = await fetch(`${backendURL}add-task`, {
     method: 'POST',
-    body: JSON.stringify({
-      email,
-      encryptionSecret,
-      UUID,
-      description,
-      project,
-      priority,
-      due,
-      tags,
-    }),
+    credentials: 'include',
+    body: JSON.stringify(requestBody),
     headers: {
       'Content-Type': 'application/json',
     },
@@ -86,25 +127,106 @@ export const editTaskOnBackend = async ({
   UUID,
   description,
   tags,
-  taskID,
+  taskUUID,
   backendURL,
+  project,
+  start,
+  entry,
+  wait,
+  end,
+  depends,
+  due,
+  recur,
+  annotations,
 }: {
   email: string;
   encryptionSecret: string;
   UUID: string;
   description: string;
   tags: string[];
-  taskID: string;
+  taskUUID: string;
   backendURL: string;
+  project: string;
+  start: string;
+  entry: string;
+  wait: string;
+  end: string;
+  depends: string[];
+  due: string;
+  recur: string;
+  annotations: { entry: string; description: string }[];
 }) => {
   const response = await fetch(`${backendURL}edit-task`, {
     method: 'POST',
+    credentials: 'include',
     body: JSON.stringify({
       email,
       encryptionSecret,
       UUID,
-      taskID,
+      taskUUID,
       description,
+      tags,
+      project,
+      start,
+      entry,
+      wait,
+      end,
+      depends,
+      due,
+      recur,
+      annotations,
+    }),
+    headers: {
+      'Content-Type': 'application/json',
+    },
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error('321' + errorText || 'Failed to edit task');
+  }
+
+  return response;
+};
+
+export const modifyTaskOnBackend = async ({
+  email,
+  encryptionSecret,
+  UUID,
+  taskUUID,
+  description,
+  project,
+  priority,
+  status,
+  due,
+  tags,
+  backendURL,
+}: {
+  email: string;
+  encryptionSecret: string;
+  UUID: string;
+  taskUUID: string;
+  description: string;
+  project: string;
+  priority: string;
+  status: string;
+  due: string;
+  tags: string[];
+  backendURL: string;
+}) => {
+  const response = await fetch(`${backendURL}modify-task`, {
+    method: 'POST',
+    credentials: 'include',
+    body: JSON.stringify({
+      email,
+      encryptionSecret,
+      UUID,
+      taskuuid: taskUUID,
+      description,
+      project,
+      priority,
+      status,
+      due,
       tags,
     }),
     headers: {
@@ -114,7 +236,7 @@ export const editTaskOnBackend = async ({
 
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(errorText || 'Failed to edit task');
+    throw new Error(errorText || 'Failed to modify task');
   }
 
   return response;

@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button';
 
 export const SetupGuide = (props: Props) => {
   const downloadConfigFile = () => {
-    const configContent = exportConfigSetup(props); // already a string
+    const configContent = exportConfigSetup(props);
     const blob = new Blob([configContent], {
       type: 'text/plain;charset=utf-8',
     });
@@ -67,20 +67,20 @@ export const SetupGuide = (props: Props) => {
                   <CopyableCode
                     text={`task config sync.encryption_secret ${props.encryption_secret}`}
                     copyText={`task config sync.encryption_secret ${props.encryption_secret}`}
+                    isSensitive={true}
                   />
                   <div className="my-4">
                     Configure Taskwarrior with these commands, run these
                     commands one block at a time
                   </div>
-                  {/* Link to container */}
                   <CopyableCode
-                    text={`task config sync.server.origin ${url.containerOrigin}`}
-                    copyText={`task config sync.server.origin ${url.containerOrigin}`}
+                    text={`task config sync.server.url ${url.containerOrigin}`}
+                    copyText={`task config sync.server.url ${url.containerOrigin}`}
                   />
-                  {/* Client ID */}
                   <CopyableCode
                     text={`task config sync.server.client_id ${props.uuid}`}
                     copyText={`task config sync.server.client_id ${props.uuid}`}
+                    isSensitive={true}
                   />
                   <div className="mt-4">
                     For more information about how this works, refer to the{' '}

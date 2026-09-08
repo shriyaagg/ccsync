@@ -9,6 +9,17 @@ import (
 	"net/http"
 )
 
+// CompleteTaskHandler godoc
+// @Summary Complete a task
+// @Description Mark a task as completed in Taskwarrior
+// @Tags Tasks
+// @Accept json
+// @Produce json
+// @Param task body models.CompleteTaskRequestBody true "Task completion details"
+// @Success 202 {string} string "Task completion accepted for processing"
+// @Failure 400 {string} string "Bad request - invalid input or missing taskuuid"
+// @Failure 405 {string} string "Method not allowed"
+// @Router /complete-task [post]
 func CompleteTaskHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodPost {
 		body, err := io.ReadAll(r.Body)
@@ -42,10 +53,18 @@ func CompleteTaskHandler(w http.ResponseWriter, r *http.Request) {
 		// http.Error(w, err.Error(), http.StatusInternalServerError)
 		// return
 		// }
+		logStore := models.GetLogStore()
 		job := Job{
 			Name: "Complete Task",
 			Execute: func() error {
-				return tw.CompleteTaskInTaskwarrior(email, encryptionSecret, uuid, taskuuid)
+				logStore.AddLog("INFO", fmt.Sprintf("Completing task UUID: %s", taskuuid), uuid, "Complete Task")
+				err := tw.CompleteTaskInTaskwarrior(email, encryptionSecret, uuid, taskuuid)
+				if err != nil {
+					logStore.AddLog("ERROR", fmt.Sprintf("Failed to complete task UUID %s: %v", taskuuid, err), uuid, "Complete Task")
+					return err
+				}
+				logStore.AddLog("INFO", fmt.Sprintf("Successfully completed task UUID: %s", taskuuid), uuid, "Complete Task")
+				return nil
 			},
 		}
 		GlobalJobQueue.AddJob(job)

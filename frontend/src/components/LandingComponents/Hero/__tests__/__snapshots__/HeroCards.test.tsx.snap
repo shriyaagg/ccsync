@@ -1,0 +1,80 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`HeroCard component using snapshot renders correctly 1`] = `
+<DocumentFragment>
+  <div
+    class="hidden lg:flex flex-row flex-wrap gap-8 relative lg:w-[560px] lg:h-[480px] xl:w-[700px] xl:h-[500px]"
+  >
+    <div
+      class="mt-4 absolute lg:w-[300px] xl:w-[340px] -top-[30px] drop-shadow-xl shadow-black/10 dark:shadow-white/10"
+      style="opacity: 0; will-change: transform,opacity; transform: scale(0.9);"
+    >
+      <div
+        class="rounded-lg border bg-card text-card-foreground shadow-sm"
+      >
+        <div
+          class="p-6 pt-0 text-center pb-2 mt-5 mb-5"
+        >
+          Keep your data safe with top-notch security features.
+        </div>
+      </div>
+    </div>
+    <div
+      class="absolute lg:right-[30px] xl:right-[8px] mt-5 top-20 lg:w-[260px] xl:w-80 flex flex-col justify-center items-center drop-shadow-xl shadow-black/10 dark:shadow-white/10"
+      style="opacity: 0; will-change: transform,opacity; transform: scale(0.9);"
+    >
+      <div
+        class="rounded-lg border bg-card text-card-foreground shadow-sm"
+      >
+        <div
+          class="p-6 pt-0 text-center pb-2 mt-5 mb-5"
+        >
+          <p>
+            Sign in to generate your keys in order to sync across all your Taskwarrior clients
+          </p>
+        </div>
+      </div>
+    </div>
+    <div
+      class="absolute lg:top-[240px] lg:left-[24px] xl:top-[170px] xl:left-[40px] w-72 drop-shadow-xl shadow-black/10 dark:shadow-white/10"
+      style="opacity: 0; will-change: transform,opacity; transform: scale(0.9);"
+    >
+      <div
+        class="rounded-lg border bg-card text-card-foreground shadow-sm"
+      >
+        <div
+          class="p-6 pt-0 text-center pb-2 mt-5 mb-5"
+        >
+          <p>
+            Hassle-free sync across all devices
+          </p>
+        </div>
+      </div>
+    </div>
+    <div
+      class="absolute lg:w-[290px] xl:w-[350px] lg:right-[30px] xl:-right-[6px] lg:bottom-[20px] xl:bottom-[90px] drop-shadow-xl shadow-black/10 dark:shadow-white/10"
+      style="opacity: 0; will-change: transform,opacity; transform: scale(0.9);"
+    >
+      <div
+        class="rounded-lg border bg-card text-card-foreground shadow-sm"
+      >
+        <div
+          class="p-6 pt-0 text-center pb-5 mt-5 mb-5"
+        >
+          <p>
+            Have any issues or queries?
+          </p>
+          <p>
+            <a
+              class="text-sky-400"
+              href="#contact"
+            >
+              Contact us
+            </a>
+          </p>
+        </div>
+      </div>
+    </div>
+  </div>
+</DocumentFragment>
+`;

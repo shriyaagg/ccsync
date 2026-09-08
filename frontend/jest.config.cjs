@@ -1,3 +1,6 @@
+// Activer le serializer Radix pour tous les tests
+process.env.RADIX_SNAPSHOT = '1';
+
 module.exports = {
   preset: 'ts-jest',
   testEnvironment: 'jsdom',
@@ -8,7 +11,10 @@ module.exports = {
   transformIgnorePatterns: ['/node_modules/(?!react-toastify)'],
   setupFilesAfterEnv: ['<rootDir>/jest.setup.ts'],
   collectCoverageFrom: ['src/**/*.{ts,tsx}', '!src/**/*.d.ts'],
-  testMatch: ['**/__tests__/**/*.{ts,tsx}', '**/?(*.)+(spec|test).{ts,tsx}'],
+  testMatch: [
+    '**/__tests__/**/*.+(test|spec).{ts,tsx}',
+    '**/?(*.)+(spec|test).{ts,tsx}',
+  ],
   transform: {
     '^.+\\.tsx?$': [
       'ts-jest',
@@ -21,7 +27,10 @@ module.exports = {
             {
               path: 'node_modules/ts-jest-mock-import-meta',
               options: {
-                metaObjectReplacement: { url: 'https://www.url.com' },
+                metaObjectReplacement: {
+                  url: 'https://www.url.com',
+                  env: {},
+                },
               },
             },
           ],

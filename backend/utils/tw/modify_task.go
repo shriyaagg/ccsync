@@ -7,52 +7,55 @@ import (
 	"strings"
 )
 
-func ModifyTaskInTaskwarrior(uuid, description, project, priority, status, due, email, encryptionSecret, taskID string, tags []string) error {
+func ModifyTaskInTaskwarrior(uuid, description, project, priority, status, due, email, encryptionSecret, taskID string, tags []string, depends []string) error {
 	if err := utils.ExecCommand("rm", "-rf", "/root/.task"); err != nil {
-		fmt.Println("1")
 		return fmt.Errorf("error deleting Taskwarrior data: %v", err)
 	}
-	tempDir, err := os.MkdirTemp("", "taskwarrior-"+email)
+	tempDir, err := os.MkdirTemp("", utils.SafeTempDirPrefix("taskwarrior-", email))
 	if err != nil {
-		fmt.Println("2")
 		return fmt.Errorf("failed to create temporary directory: %v", err)
 	}
 	defer os.RemoveAll(tempDir)
 
 	origin := os.Getenv("CONTAINER_ORIGIN")
 	if err := SetTaskwarriorConfig(tempDir, encryptionSecret, origin, uuid); err != nil {
-		fmt.Println("4")
 		return err
 	}
 
 	if err := SyncTaskwarrior(tempDir); err != nil {
-		fmt.Println("5")
 		return err
 	}
 
 	escapedDescription := fmt.Sprintf(`description:"%s"`, strings.ReplaceAll(description, `"`, `\"`))
 
 	if err := utils.ExecCommand("task", taskID, "modify", escapedDescription); err != nil {
-		fmt.Println("6")
 		return fmt.Errorf("failed to edit task: %v", err)
 	}
 
 	escapedProject := fmt.Sprintf(`project:%s`, strings.ReplaceAll(project, `"`, `\"`))
 	if err := utils.ExecCommand("task", taskID, "modify", escapedProject); err != nil {
-		fmt.Println("7")
 		return fmt.Errorf("failed to edit task project: %v", err)
 	}
 
 	escapedPriority := fmt.Sprintf(`priority:%s`, strings.ReplaceAll(priority, `"`, `\"`))
 	if err := utils.ExecCommand("task", taskID, "modify", escapedPriority); err != nil {
-		fmt.Println("8")
 		return fmt.Errorf("failed to edit task priority: %v", err)
 	}
 
 	escapedDue := fmt.Sprintf(`due:%s`, strings.ReplaceAll(due, `"`, `\"`))
 	if err := utils.ExecCommand("task", taskID, "modify", escapedDue); err != nil {
-		fmt.Println("8")
 		return fmt.Errorf("failed to edit task due: %v", err)
+	}
+
+	// Handle dependencies - always set to ensure clearing works
+	if err := utils.ExecCommand("task", taskID, "modify", "depends:"); err != nil {
+		return fmt.Errorf("failed to clear dependencies: %v", err)
+	}
+	if len(depends) > 0 {
+		dependsStr := strings.Join(depends, ",")
+		if err := utils.ExecCommand("task", taskID, "modify", "depends:"+dependsStr); err != nil {
+			return fmt.Errorf("failed to set dependencies %s: %v", dependsStr, err)
+		}
 	}
 
 	// escapedStatus := fmt.Sprintf(`status:%s`, strings.ReplaceAll(status, `"`, `\"`))
@@ -87,7 +90,6 @@ func ModifyTaskInTaskwarrior(uuid, description, project, priority, status, due, 
 	}
 
 	if err := SyncTaskwarrior(tempDir); err != nil {
-		fmt.Println("11")
 		return err
 	}
 

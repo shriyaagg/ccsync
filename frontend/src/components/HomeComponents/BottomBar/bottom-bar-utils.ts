@@ -7,12 +7,14 @@ export interface RouteProps {
 
 export interface BottomBarProps {
   projects: string[];
-  selectedProject: string | null;
-  setSelectedProject: Dispatch<SetStateAction<string>>;
-
+  selectedProjects: string[];
+  setSelectedProject: Dispatch<SetStateAction<string[]>>;
   status: string[];
-  selectedStatus: string | null;
-  setSelectedStatus: Dispatch<SetStateAction<string>>;
+  selectedStatuses: string[];
+  setSelectedStatus: Dispatch<SetStateAction<string[]>>;
+  tags: string[];
+  selectedTags: string[];
+  setSelectedTag: Dispatch<SetStateAction<string[]>>;
 }
 
 export const routeList: RouteProps[] = [

@@ -43,6 +43,48 @@
 
   if you want to run by `npm run dev`
 
+  ### Optional: Custom Backend Port
+
+  You can set a custom port for the backend server using the `CCSYNC_PORT` environment variable:
+
+  ```bash
+  CCSYNC_PORT="8081"
+  ```
+
+  Note:
+
+  `CCSYNC_PORT` only affects the port of the backend process itself, not the Docker port mapping, and is mainly intended for use outside of a containerized environment to avoid port conflicts.
+  If you are running the backend via Docker, the exposed ports are determined by the compose configuration. To use a different port in a Docker environment, you must manually update the docker-compose.yml file to adjust the container’s port mapping.
+  Also, if you change `CCSYNC_PORT`, remember to update `CONTAINER_ORIGIN` accordingly.
+
+  ### Rate Limiting and Trusted Proxies
+
+  The backend includes rate limiting that uses the client's IP address. When running behind a reverse proxy (like nginx), you need to configure trusted proxies so the backend correctly identifies client IPs from proxy headers.
+
+  **Automatic Trust:**
+  - Loopback addresses (127.0.0.1, ::1) are always trusted
+  - In production (`ENV=production`), Docker bridge networks (172.16.0.0/12) are trusted
+
+  **Manual Configuration:**
+
+  Use `TRUSTED_PROXIES` to specify additional trusted proxy IPs or CIDR ranges:
+
+  ```bash
+  # Single IP
+  TRUSTED_PROXIES="10.0.0.1"
+
+  # Multiple IPs (comma-separated)
+  TRUSTED_PROXIES="10.0.0.1,10.0.0.2"
+
+  # CIDR notation
+  TRUSTED_PROXIES="10.0.0.0/8,192.168.0.0/16"
+  ```
+
+  **When to use:**
+  - **Local development**: Not needed (loopback is trusted by default)
+  - **Production with nginx on same server**: Not needed (loopback is trusted)
+  - **Production with external load balancer**: Set to your load balancer's IP/range
+
 - Run the application:
 
   ```bash
@@ -55,3 +97,11 @@
   docker-compose build backend
   docker-compose up
   ```
+
+## API Documentation
+
+Once the backend server is running, you can view the interactive API documentation (Swagger UI) at:
+
+- **Local development**: http://localhost:8000/api/docs/index.html
+
+The documentation provides detailed information about all available endpoints, request/response schemas, and allows you to test the API directly from your browser.

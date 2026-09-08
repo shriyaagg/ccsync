@@ -84,3 +84,113 @@ func Test_ExecCommandForOutputInDir(t *testing.T) {
 		t.Errorf("Expected output but got empty result")
 	}
 }
+
+func Test_ValidateDependencies_EmptyList(t *testing.T) {
+	depends := []string{}
+	currentTaskUUID := "current-task-uuid"
+	err := ValidateDependencies(depends, currentTaskUUID)
+	assert.NoError(t, err)
+}
+
+// Circular Dependency Detection Tests
+func Test_detectCycle_NoCycle(t *testing.T) { //A -> B -> C
+	graph := map[string][]string{
+		"A": {"B"},
+		"B": {"C"},
+		"C": {},
+	}
+
+	hasCycle := detectCycle(graph, "A")
+	assert.False(t, hasCycle, "Should not detect cycle in linear dependency")
+}
+
+func Test_detectCycle_SimpleCycle(t *testing.T) { // A -> B -> A
+	graph := map[string][]string{
+		"A": {"B"},
+		"B": {"A"},
+	}
+
+	hasCycle := detectCycle(graph, "A")
+	assert.True(t, hasCycle, "Should detect simple cycle A -> B -> A")
+}
+
+func Test_detectCycle_ComplexCycle(t *testing.T) { // A -> B -> C -> A
+	graph := map[string][]string{
+		"A": {"B"},
+		"B": {"C"},
+		"C": {"A"},
+	}
+
+	hasCycle := detectCycle(graph, "A")
+	assert.True(t, hasCycle, "Should detect complex cycle A -> B -> C -> A")
+}
+func TestConvertISOToTaskwarriorFormat(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+		hasError bool
+	}{
+		{
+			name:     "ISO datetime with milliseconds (frontend format)",
+			input:    "2025-12-27T14:30:00.000Z",
+			expected: "2025-12-27T14:30:00",
+			hasError: false,
+		},
+		{
+			name:     "ISO datetime at midnight (explicit datetime)",
+			input:    "2025-12-27T00:00:00.000Z",
+			expected: "2025-12-27T00:00:00",
+			hasError: false,
+		},
+		{
+			name:     "Date only format",
+			input:    "2025-12-27",
+			expected: "2025-12-27",
+			hasError: false,
+		},
+		{
+			name:     "Empty string",
+			input:    "",
+			expected: "",
+			hasError: false,
+		},
+		{
+			name:     "Invalid format",
+			input:    "invalid-date",
+			expected: "",
+			hasError: true,
+		},
+		{
+			name:     "Compact ISO datetime format (Taskwarrior export)",
+			input:    "20260128T000000Z",
+			expected: "2026-01-28T00:00:00",
+			hasError: false,
+		},
+		{
+			name:     "Compact ISO datetime format with time",
+			input:    "20260128T143000Z",
+			expected: "2026-01-28T14:30:00",
+			hasError: false,
+		},
+		{
+			name:     "Compact date only format",
+			input:    "20260128",
+			expected: "2026-01-28",
+			hasError: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := ConvertISOToTaskwarriorFormat(tt.input)
+
+			if tt.hasError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+				assert.Equal(t, tt.expected, result)
+			}
+		})
+	}
+}
